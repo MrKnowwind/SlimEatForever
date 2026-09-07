@@ -37,6 +37,7 @@ class SlimeDungeonScene extends Phaser.Scene {
     this.nextBoneAt = this.time.now + getBoneSpawnInterval(this.mass, this.meta);
     this.nextWaveAt = this.time.now + 15000;
     this.guideStage = 0;
+    this.battleSpeed = 1;
 
     this.drawCave();
     this.createAmbient();
@@ -125,19 +126,13 @@ class SlimeDungeonScene extends Phaser.Scene {
     plate.lineStyle(1, 0x718087, 0.28);
     [242, 620, 874].forEach((x) => plate.strokeLineShape(new Phaser.Geom.Line(x, 18, x, 84)));
     hud.add(plate);
-    hud.add(this.add.text(38, 23, '史莱姆地牢', { fontFamily: 'serif', fontSize: '25px', fontStyle: 'bold', color: '#f5efda' }));
-    hud.add(this.add.text(39, 56, 'THE HUNGER BELOW', { fontFamily: 'sans-serif', fontSize: '9px', color: '#75858a', letterSpacing: 2 }));
-    this.massText = this.add.text(270, 25, 'MASS  0', { fontFamily: 'sans-serif', fontSize: '22px', fontStyle: 'bold', color: '#aaf2b2' });
-    this.coinText = this.add.text(430, 30, '◆  0', { fontFamily: 'sans-serif', fontSize: '17px', fontStyle: 'bold', color: '#f4cf7b' });
-    hud.add([this.massText, this.coinText]);
-    hud.add(this.add.text(640, 24, '地牢深处', { fontFamily: 'sans-serif', fontSize: '11px', color: '#778792' }));
-    this.waveText = this.add.text(640, 47, '第 1 波 · 见习小队', { fontFamily: 'sans-serif', fontSize: '14px', fontStyle: 'bold', color: '#e9e6cf' });
-    this.timerText = this.add.text(895, 27, '袭击倒计时  15.0s', { fontFamily: 'sans-serif', fontSize: '16px', fontStyle: 'bold', color: '#f4c76b' });
-    this.powerText = this.add.text(895, 54, '来袭战力  70', { fontFamily: 'sans-serif', fontSize: '11px', color: '#9aaab1' });
-    hud.add([this.waveText, this.timerText, this.powerText]);
-    this.barBg = this.add.rectangle(1040, 82, 160, 7, 0x1d2b34).setStrokeStyle(1, 0x46555c, 0.72); this.barFill = this.add.rectangle(960, 82, 0, 5, 0xecae5e).setOrigin(0, 0.5);
-    hud.add([this.barBg, this.barFill]);
-    hud.add(this.add.text(909, 82, '准备', { fontFamily: 'sans-serif', fontSize: '9px', color: '#71848a', letterSpacing: 1 }).setOrigin(1, 0.5));
+    hud.add(this.add.text(38, 29, '史莱姆地牢', { fontFamily: 'serif', fontSize: '25px', fontStyle: 'bold', color: '#f5efda' }));
+    hud.add(this.add.text(272, 26, '进化', { fontFamily: 'sans-serif', fontSize: '10px', color: '#8aa098', letterSpacing: 1 }));
+    this.evolutionBarBg = this.add.rectangle(272, 54, 310, 12, 0x1c2b31).setOrigin(0, 0.5).setStrokeStyle(1, 0x4b625b, 0.78);
+    this.evolutionFill = this.add.rectangle(275, 54, 0, 6, 0x75d889).setOrigin(0, 0.5);
+    hud.add([this.evolutionBarBg, this.evolutionFill]);
+    this.timerText = this.add.text(895, 38, '袭击倒计时  15.0s', { fontFamily: 'sans-serif', fontSize: '17px', fontStyle: 'bold', color: '#f4c76b' });
+    hud.add(this.timerText);
     const helpPlate = this.add.graphics().setDepth(18);
     paintPolygon(helpPlate, [[330, 672], [830, 672], [844, 683], [830, 695], [330, 695], [316, 683]], 0x091117, 0.9, 0x34464a, 1, 0.7);
     this.guideText = this.add.text(580, 683, '', { fontFamily: 'sans-serif', fontSize: '12px', color: '#afbeb2' }).setOrigin(0.5).setDepth(19);
@@ -148,7 +143,7 @@ class SlimeDungeonScene extends Phaser.Scene {
     const guides = [
       '① 等待骨堆凝聚骨片',
       '② 拖动黄色描边骨片到史莱姆嘴边',
-      '③ 吞噬骨片积累 Mass，准备迎接第一波',
+      '③ 吞噬骨片积累进化能量，准备迎接第一波',
       '④ 遭遇战开始：观察同一条行动赛道',
     ];
     this.guideText?.setText(guides[this.guideStage] || guides.at(-1));
@@ -288,11 +283,8 @@ class SlimeDungeonScene extends Phaser.Scene {
     pileArt.lineStyle(1, 0x756a55, 0.8).strokeLineShape(new Phaser.Geom.Line(-7, 11, 8, 11));
     artGroup.add([shadow, outline, pileArt]);
     visual.add(artGroup);
-    visual.add(this.add.text(0, 58, '骨堆 · 自动产出', { fontFamily: 'serif', fontSize: '14px', fontStyle: 'bold', color: '#fff4d8', stroke: '#0a1114', strokeThickness: 5 }).setOrigin(0.5));
-    const timerText = this.add.text(0, 79, '骨片凝聚中', { fontFamily: 'sans-serif', fontSize: '10px', color: '#9ab4a4' }).setOrigin(0.5);
-    visual.add(timerText);
     root.add(visual);
-    return { root, artGroup, timerText, x, y, direction };
+    return { root, artGroup, x, y, direction };
   }
 
   makeBoneArt(type = 'bone', size = 1) {
@@ -457,7 +449,7 @@ class SlimeDungeonScene extends Phaser.Scene {
     this.playSlimeChew();
     this.createFeedBurst(bone.foodData.color);
     this.updateHud();
-    this.showToast(`${bone.foodData.name} 被吞噬  ·  Mass +${growth}  ·  ◆ +${growth}`, 1150);
+    this.showToast(`${bone.foodData.name} 被吞噬  ·  进化能量 +${growth}`, 1150);
   }
 
   createFeedBurst(color) {
@@ -485,8 +477,6 @@ class SlimeDungeonScene extends Phaser.Scene {
 
   update(time) {
     if (this.isEnded) return;
-    const pileRemaining = Math.max(0, (this.nextBoneAt - time) / 1000).toFixed(1);
-    this.bonePiles.forEach((pile) => pile.timerText.setText(`下一枚骨片  ${pileRemaining}s`));
     if (!this.inBattle && time >= this.nextBoneAt && this.bones.length < 9) {
       const sourcePile = this.bonePiles[this.nextPileIndex % this.bonePiles.length];
       const point = this.getBoneDropPoint(sourcePile);
@@ -501,7 +491,7 @@ class SlimeDungeonScene extends Phaser.Scene {
     const remaining = Math.max(0, (this.nextWaveAt - time) / 1000);
     this.timerText.setText(this.inBattle ? '袭击中 · 史莱姆自动迎战' : `袭击倒计时  ${remaining.toFixed(1)}s`);
     this.timerText.setColor(remaining < 5 && !this.inBattle ? '#ff776e' : '#f4c76b');
-    this.barFill.width = 160 * (this.inBattle ? 1 : clamp(1 - remaining / config.duration, 0, 1));
+    this.evolutionFill.width = 304 * clamp(this.mass / Math.max(150, config.power), 0, 1);
     if (!this.inBattle && time >= this.nextWaveAt) this.startWave();
   }
 
@@ -578,7 +568,8 @@ class SlimeDungeonScene extends Phaser.Scene {
     const party = this.createAdventurerParty(877, 405, config.wave);
     battle.add([slime.root, party.root]);
 
-    const playerCard = this.createBattleCard(battle, 197, 142, '黏液核心', 'Mass ' + formatNumber(this.mass), 0x65d682, 0x153b36);
+    this.battleSpeed = 1;
+    const playerCard = this.createBattleCard(battle, 197, 142, '黏液核心', '进化能量', 0x65d682, 0x153b36);
     const enemyName = config.wave === 1 ? '木剑见习者' : '冒险者小队';
     const enemyCard = this.createBattleCard(battle, 963, 142, enemyName, '战力 ' + formatNumber(config.power), 0xe0827c, 0x4b2935);
     const timeline = this.createBattleTimeline(battle, config.wave);
@@ -620,6 +611,18 @@ class SlimeDungeonScene extends Phaser.Scene {
     panel.add(this.add.text(-472, -43, '行动竞速', { fontFamily: 'serif', fontSize: '17px', fontStyle: 'bold', color: '#f4e9cf' }));
     const actionText = this.add.text(-292, -42, '所有单位在同一条行动轨上推进', { fontFamily: 'sans-serif', fontSize: '12px', color: '#9db5ad' });
     panel.add(actionText);
+    const speedButton = this.add.container(427, -42);
+    const speedBg = this.add.rectangle(0, 0, 92, 28, 0x213630, 1).setStrokeStyle(1, 0x79bd8c, 0.8).setInteractive({ useHandCursor: true });
+    const speedText = this.add.text(0, 0, '速度 1x', { fontFamily: 'sans-serif', fontSize: '12px', fontStyle: 'bold', color: '#d9f0d5' }).setOrigin(0.5);
+    speedButton.add([speedBg, speedText]);
+    speedBg.on('pointerover', () => speedBg.setFillStyle(0x2d5143));
+    speedBg.on('pointerout', () => speedBg.setFillStyle(0x213630));
+    speedBg.on('pointerdown', () => {
+      this.battleSpeed = this.battleSpeed === 1 ? 2 : 1;
+      speedText.setText(`速度 ${this.battleSpeed}x`);
+      speedBg.setFillStyle(this.battleSpeed === 2 ? 0x765531 : 0x213630);
+    });
+    panel.add(speedButton);
 
     const startX = -336;
     const width = 738;
@@ -806,8 +809,12 @@ class SlimeDungeonScene extends Phaser.Scene {
     }
     const turn = state.plan.turns[index];
     this.runBattleRace(turn.racer, () => this.performBattleStrike(turn, () => {
-      this.time.delayedCall(480, () => this.playBattleTurn(index + 1));
+      this.time.delayedCall(this.battleDuration(480), () => this.playBattleTurn(index + 1));
     }));
+  }
+
+  battleDuration(base) {
+    return base / (this.battleSpeed || 1);
   }
 
   runBattleRace(racerKey, complete) {
@@ -824,11 +831,11 @@ class SlimeDungeonScene extends Phaser.Scene {
         x: racer.startX + racer.width * racer.nextProgress,
         scaleX: racer === active ? 1.22 : 1,
         scaleY: racer === active ? 1.22 : 1,
-        duration: 560,
+        duration: this.battleDuration(560),
         ease: 'Sine.inOut',
       });
     });
-    this.time.delayedCall(630, () => {
+    this.time.delayedCall(this.battleDuration(630), () => {
       if (!this.battle?.active) return;
       Object.values(state.racers).forEach((racer) => { racer.progress = racer.nextProgress; });
       complete();
@@ -855,18 +862,18 @@ class SlimeDungeonScene extends Phaser.Scene {
       targets: attackerVisual,
       x: attackerVisual.baseX + direction * 42,
       y: attackerVisual.baseY - 8,
-      duration: 150,
+      duration: this.battleDuration(150),
       yoyo: true,
       ease: 'Cubic.out',
     });
-    this.time.delayedCall(155, () => {
+    this.time.delayedCall(this.battleDuration(155), () => {
       if (!this.battle?.active) return;
       if (defenderKey === 'enemy') state.enemyHp = Math.max(0, state.enemyHp - turn.damage);
       else state.slimeHp = Math.max(0, state.slimeHp - turn.damage);
       this.tweens.add({ targets: defender.root, x: defender.baseX - direction * 13, angle: direction * 3, duration: 72, yoyo: true, repeat: 2, ease: 'Sine.inOut' });
       this.createBattleImpact(defender.baseX - direction * 22, defender.baseY - 22, turn.actor === 'slime' ? 0x9af5a2 : 0xf3b38a, turn.damage);
       this.updateBattleUi();
-      this.time.delayedCall(460, () => {
+      this.time.delayedCall(this.battleDuration(460), () => {
         this.resetBattleRacer(turn.racer);
         complete();
       });
@@ -970,11 +977,8 @@ class SlimeDungeonScene extends Phaser.Scene {
   }
 
   updateHud() {
-    this.massText?.setText(`MASS  ${formatNumber(this.mass)}`);
-    this.coinText?.setText(`◆  ${formatNumber(this.coins)}`);
     const config = getWaveConfig(this.wave);
-    this.waveText?.setText(`第 ${this.wave} 波 · ${config.title}`);
-    this.powerText?.setText(`来袭战力  ${formatNumber(config.power)}  ·  你的战力  ${formatNumber(this.mass)}`);
+    this.evolutionFill?.setDisplaySize(304 * clamp(this.mass / Math.max(150, config.power), 0, 1), 6);
   }
 
   showToast(message, duration = 1400) {
@@ -994,7 +998,7 @@ class SlimeDungeonScene extends Phaser.Scene {
     overlay.add(this.add.text(580, 178, '本 局 结 算', { fontFamily: 'serif', fontSize: '38px', fontStyle: 'bold', color: '#f5efda', letterSpacing: 5 }).setOrigin(0.5));
     overlay.add(this.add.text(580, 226, `止步于第 ${this.wave} 波 · ${config.title}`, { fontFamily: 'sans-serif', fontSize: '14px', color: '#99aab0' }).setOrigin(0.5));
     const stats = [
-      ['最终 MASS', formatNumber(this.mass), 0x9be7a8],
+      ['进化阶段', this.mass >= 100 ? '成熟体' : this.mass >= 50 ? '凝胶体' : '幼体', 0x9be7a8],
       ['吞噬骨片', formatNumber(this.itemsFed), 0xe7d7af],
       ['抵达波次', `第 ${this.wave} 波`, 0xd9b68b],
       ['本局魂晶', `+${earned} ◆`, 0xf2c867],
