@@ -1,6 +1,6 @@
 :root {
   color-scheme: dark;
-  font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
   background: #070a11;
   color: #f5f2df;
 }
@@ -32,11 +32,11 @@ body {
   width: min(1160px, calc(100vw - 32px), calc((100dvh - 58px) * 1.6111));
   overflow: hidden;
   border: 1px solid rgb(255 255 255 / 14%);
-  border-radius: 20px;
+  border-radius: 0;
   background: #131a27;
   box-shadow: 0 28px 90px rgb(0 0 0 / 52%);
 }
 
-#game, #game canvas { display: block; width: 100% !important; height: auto !important; }
+#game, #game canvas { display: block; width: 100% !important; height: auto !important; image-rendering: pixelated; image-rendering: crisp-edges; }
 
 .hint { margin: 10px 0 0; color: rgb(227 231 239 / 62%); font-size: 12px; letter-spacing: .04em; }

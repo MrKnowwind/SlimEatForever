@@ -1,24 +1,17 @@
 import * as Phaser from 'phaser';
 import {
-  ARENA, FOOD, HEIGHT, WIDTH, calculateGrowth, canConsume, chooseBoneSpawnPoint,
-  emptyMeta, formatNumber, getBoneSpawnInterval, getBoneValue,
-  getBattlePlan, getBattleRacers, getMagnetRadius, getVisibleUpgradeNodes,
+  ARENA, FOOD, HEIGHT, WIDTH, UPGRADE_NODES, calculateGrowth, canConsume, chooseBoneSpawnPoint,
+  emptyMeta, formatNumber, getBattleBoneBonus, getBonusProductionChance, getBoneSearchCooldown, getBoneSpawnInterval, getBoneValue, getEvolutionMassCap, getLargeBoneChance, getSlimeStage,
+  getBattlePlan, getBattleRacers, getMagnetRadius, getUpgradeNodeState,
   getWaveConfig, soulReward,
 } from './gameLogic.js';
-
-const COLORS = {
-  night: 0x080b12, stone: 0x20272b, stoneLight: 0x2d3938, stoneDark: 0x151b20,
-  moss: 0x4b705a, bone: 0xe8d8af, boneShade: 0x9d8969, green: 0x69d481,
-  greenDark: 0x246b58, mint: 0xbaffc3, gold: 0xf4c76b, danger: 0xff776e,
-};
+import {
+  DungeonProps, PixelEffects, PixelPalette, PixelUI,
+  createDungeon, makeBattleBackdrop, makeItemSprite, makeAdventurerSprite, pixelPanel,
+} from './pixelArt.js';
 
 function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
 function distance(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
-function paintPolygon(graphics, points, color, alpha = 1, stroke = null, lineWidth = 1, strokeAlpha = 1) {
-  const path = points.map(([x, y]) => ({ x, y }));
-  graphics.fillStyle(color, alpha).fillPoints(path, true);
-  if (stroke !== null) graphics.lineStyle(lineWidth, stroke, strokeAlpha).strokePoints(path, true);
-}
 
 class SlimeDungeonScene extends Phaser.Scene {
   constructor() { super('slime-dungeon'); }
@@ -28,6 +21,7 @@ class SlimeDungeonScene extends Phaser.Scene {
     this.mass = 0;
     this.coins = 0;
     this.itemsFed = 0;
+    this.boneValueBonus = 0;
     this.wave = 1;
     this.bones = [];
     this.bonePiles = [];
@@ -35,8 +29,7 @@ class SlimeDungeonScene extends Phaser.Scene {
     this.isEnded = false;
     this.inBattle = false;
     this.nextBoneAt = this.time.now + getBoneSpawnInterval(this.mass, this.meta);
-    this.nextWaveAt = this.time.now + 15000;
-    this.guideStage = 0;
+    this.nextWaveAt = this.time.now + getWaveConfig(this.wave).duration * 1000;
     this.battleSpeed = 1;
 
     this.drawCave();
@@ -47,8 +40,6 @@ class SlimeDungeonScene extends Phaser.Scene {
     this.createInput();
     this.spawnInitialBones();
     this.updateHud();
-    this.showToast('骨堆会自动产出骨片 · 把黄色描边骨片拖到史莱姆嘴边', 3400);
-    this.updateEarlyGuide();
   }
 
   loadMeta() {
@@ -59,102 +50,36 @@ class SlimeDungeonScene extends Phaser.Scene {
 
   saveMeta() { localStorage.setItem('slime-dungeon-meta', JSON.stringify(this.meta)); }
 
-  drawCave() {
-    this.add.rectangle(WIDTH / 2, HEIGHT / 2, WIDTH, HEIGHT, COLORS.night);
-    const terrain = this.add.graphics().setDepth(1);
-    terrain.fillStyle(0x0d161e, 1).fillRect(28, 112, 1104, 570);
-
-    // A single recessed arch gives the room a focal point without filling the
-    // play area with equally loud stones.
-    paintPolygon(terrain, [[310, 393], [310, 276], [333, 215], [390, 163], [474, 128], [580, 116], [686, 128], [770, 163], [827, 215], [850, 276], [850, 393]], 0x18252c, 1, 0x3b4a4d, 2, 0.72);
-    paintPolygon(terrain, [[365, 393], [365, 288], [385, 235], [432, 194], [501, 166], [580, 156], [659, 166], [728, 194], [775, 235], [795, 288], [795, 393]], 0x101b23, 1, 0x26383d, 2, 0.82);
-    paintPolygon(terrain, [[430, 393], [430, 297], [449, 250], [492, 216], [540, 198], [580, 193], [620, 198], [668, 216], [711, 250], [730, 297], [730, 393]], 0x0b141c, 1);
-
-    // Heavy side buttresses frame the room and keep the center clear for play.
-    paintPolygon(terrain, [[28, 147], [116, 132], [172, 165], [190, 393], [28, 415]], 0x1c292e, 1, 0x3c4b4c, 2, 0.68);
-    paintPolygon(terrain, [[1132, 147], [1044, 132], [988, 165], [970, 393], [1132, 415]], 0x1c292e, 1, 0x3c4b4c, 2, 0.68);
-    paintPolygon(terrain, [[47, 180], [91, 164], [128, 179], [138, 383], [65, 394]], 0x243338, 0.8);
-    paintPolygon(terrain, [[1113, 180], [1069, 164], [1032, 179], [1022, 383], [1095, 394]], 0x243338, 0.8);
-
-    paintPolygon(terrain, [[28, 386], [188, 366], [382, 380], [580, 365], [778, 380], [972, 366], [1132, 386], [1132, 682], [28, 682]], 0x202e30, 1, 0x425151, 1, 0.62);
-    paintPolygon(terrain, [[177, 682], [306, 390], [482, 378], [444, 682]], 0x283837, 0.62, 0x40534d, 1, 0.3);
-    paintPolygon(terrain, [[716, 682], [678, 378], [854, 390], [983, 682]], 0x17272b, 0.66, 0x40534d, 1, 0.3);
-    paintPolygon(terrain, [[444, 682], [482, 378], [678, 378], [716, 682]], 0x263934, 0.7, 0x527064, 1, 0.34);
-    paintPolygon(terrain, [[28, 594], [204, 570], [380, 588], [580, 568], [780, 588], [956, 570], [1132, 594], [1132, 682], [28, 682]], 0x182326, 0.54);
-
-    terrain.lineStyle(2, 0x607068, 0.2);
-    [[76, 473, 114, 457, 151, 466], [965, 478, 1002, 459, 1046, 469], [253, 621, 292, 606, 332, 613], [829, 621, 866, 607, 905, 614]].forEach((points) => {
-      terrain.beginPath();
-      terrain.moveTo(points[0], points[1]);
-      for (let point = 2; point < points.length; point += 2) terrain.lineTo(points[point], points[point + 1]);
-      terrain.strokePath();
-    });
-
-    const ceiling = this.add.graphics().setDepth(5);
-    paintPolygon(ceiling, [[28, 112], [28, 143], [118, 129], [214, 150], [314, 120], [422, 144], [535, 116], [655, 145], [777, 121], [900, 151], [1023, 125], [1132, 142], [1132, 112]], 0x0c131b, 1, 0x36444a, 2, 0.8);
-    [
-      [[75, 124], [138, 126], [115, 184], [90, 194]],
-      [[1047, 124], [1090, 129], [1073, 173], [1054, 176]],
-    ].forEach((points) => paintPolygon(ceiling, points, 0x151e27, 1, 0x405057, 1, 0.58));
-
-    this.add.line(28, 113, 0, 0, 1104, 0, 0x6f7d78, 0.52).setLineWidth(2).setDepth(7);
-    this.add.line(28, 681, 0, 0, 1104, 0, 0x10161b, 0.9).setLineWidth(2).setDepth(7);
-    this.add.rectangle(28, 424, 10, 530, 0x0b1116, 0.82).setDepth(7);
-    this.add.rectangle(1132, 424, 10, 530, 0x0b1116, 0.82).setDepth(7);
-  }
+  drawCave() { this.dungeonArt = createDungeon(this, WIDTH, HEIGHT); }
 
   createAmbient() {
     this.motes = [];
-    for (let i = 0; i < 8; i += 1) {
-      const mote = this.add.rectangle(110 + (i * 137) % 880, 203 + (i * 79) % 330, 2, i % 3 === 0 ? 7 : 4, i % 4 === 0 ? 0xe5c987 : 0x90c9a7, i % 3 === 0 ? 0.2 : 0.12)
-        .setAngle(-22 + (i % 5) * 11).setDepth(4);
+    for (let i = 0; i < 6; i += 1) {
+      const mote = PixelEffects.particle(this, i % 3 === 0 ? 0xe5c987 : 0x90c9a7, 4)
+        .setPosition(118 + (i * 173) % 890, 218 + (i * 97) % 310).setAlpha(i % 3 === 0 ? 0.18 : 0.1).setDepth(4);
       this.motes.push(mote);
       this.tweens.add({ targets: mote, y: mote.y - 12 - (i % 4) * 5, alpha: 0.01, duration: 2900 + i * 110, delay: i * 160, repeat: -1, yoyo: true, ease: 'Sine.inOut' });
     }
-    const moss = this.add.graphics().setDepth(4);
-    moss.lineStyle(4, COLORS.moss, 0.45);
-    [[42, 180, 74, 215], [1116, 188, 1098, 230]].forEach(([x1, y1, x2, y2]) => {
-      moss.beginPath(); moss.moveTo(x1, y1); moss.lineTo(x1 + 10, y1 + 16); moss.lineTo(x2, y2); moss.strokePath();
-    });
   }
 
   createHud() {
     const hud = this.add.container(0, 0).setDepth(20);
-    const plate = this.add.graphics();
-    paintPolygon(plate, [[28, 8], [1132, 8], [1132, 86], [1122, 96], [38, 96], [28, 86]], 0x0a121b, 0.97, 0x596a71, 2, 0.76);
-    paintPolygon(plate, [[35, 15], [1125, 15], [1125, 22], [35, 22]], 0x21313b, 0.72);
-    plate.lineStyle(1, 0x718087, 0.28);
-    [242, 620, 874].forEach((x) => plate.strokeLineShape(new Phaser.Geom.Line(x, 18, x, 84)));
+    const plate = pixelPanel(this, 580, 50, 1104, 80, PixelPalette.edge);
     hud.add(plate);
-    hud.add(this.add.text(38, 29, '史莱姆地牢', { fontFamily: 'serif', fontSize: '25px', fontStyle: 'bold', color: '#f5efda' }));
-    hud.add(this.add.text(272, 26, '进化', { fontFamily: 'sans-serif', fontSize: '10px', color: '#8aa098', letterSpacing: 1 }));
-    this.evolutionBarBg = this.add.rectangle(272, 54, 310, 12, 0x1c2b31).setOrigin(0, 0.5).setStrokeStyle(1, 0x4b625b, 0.78);
-    this.evolutionFill = this.add.rectangle(275, 54, 0, 6, 0x75d889).setOrigin(0, 0.5);
+    hud.add(this.add.text(48, 28, '史 莱 姆 地 牢', { fontFamily: 'Microsoft YaHei, sans-serif', fontSize: '22px', fontStyle: 'bold', color: '#f5efda', stroke: '#071015', strokeThickness: 3 }));
+    hud.add(this.add.text(276, 26, '进 化', { fontFamily: 'Microsoft YaHei, sans-serif', fontSize: '12px', fontStyle: 'bold', color: '#8fc9ae' }));
+    const evolutionBar = PixelUI.bar(this, 431, 55, 310, 16, PixelPalette.cyan);
+    this.evolutionBarBg = evolutionBar.background;
+    this.evolutionFill = evolutionBar.fill;
+    this.evolutionMaxWidth = evolutionBar.maxWidth;
+    this.evolutionFill.setDisplaySize(0, 8);
     hud.add([this.evolutionBarBg, this.evolutionFill]);
-    this.timerText = this.add.text(895, 38, '袭击倒计时  15.0s', { fontFamily: 'sans-serif', fontSize: '17px', fontStyle: 'bold', color: '#f4c76b' });
+    this.timerText = this.add.text(890, 37, '袭击倒计时  25.0s', { fontFamily: 'Microsoft YaHei, sans-serif', fontSize: '17px', fontStyle: 'bold', color: '#f4c76b', stroke: '#20150e', strokeThickness: 3 });
     hud.add(this.timerText);
-    const helpPlate = this.add.graphics().setDepth(18);
-    paintPolygon(helpPlate, [[330, 672], [830, 672], [844, 683], [830, 695], [330, 695], [316, 683]], 0x091117, 0.9, 0x34464a, 1, 0.7);
-    this.guideText = this.add.text(580, 683, '', { fontFamily: 'sans-serif', fontSize: '12px', color: '#afbeb2' }).setOrigin(0.5).setDepth(19);
-  }
-
-  updateEarlyGuide(stage = this.guideStage) {
-    this.guideStage = Math.max(this.guideStage, stage);
-    const guides = [
-      '① 等待骨堆凝聚骨片',
-      '② 拖动黄色描边骨片到史莱姆嘴边',
-      '③ 吞噬骨片积累进化能量，准备迎接第一波',
-      '④ 遭遇战开始：观察同一条行动赛道',
-    ];
-    this.guideText?.setText(guides[this.guideStage] || guides.at(-1));
   }
 
   createSlime() {
     this.slime = this.add.container(580, 447).setDepth(11);
-    this.slimeShadow = this.add.graphics().setDepth(7);
-    paintPolygon(this.slimeShadow, [[-104, 503], [-61, 488], [-12, 482], [48, 486], [104, 502], [58, 515], [-24, 518], [-92, 511]], 0x060c10, 0.62);
-    this.slimeAura = this.add.ellipse(580, 484, 164, 42, 0x6cda8b, 0.07).setDepth(6);
-    this.tweens.add({ targets: this.slimeAura, scaleX: 1.08, scaleY: 0.86, alpha: 0.025, duration: 1500, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
     this.drawSlime();
     this.slimeBob = this.tweens.add({ targets: this.slime, y: 440, duration: 1100, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
     this.time.addEvent({ delay: 2600, loop: true, callback: () => this.playSlimeBlink() });
@@ -164,33 +89,153 @@ class SlimeDungeonScene extends Phaser.Scene {
   drawSlime() {
     this.tweens.killTweensOf(this.slimeArt);
     this.slime.list.slice().forEach((child) => child.destroy());
-    const scale = 1 + Math.min(0.8, this.mass / 280);
-    const portrait = this.makeSlimeArt(scale);
+    const isMicroSlime = (this.meta.evolution || 0) === 0;
+    const growthScale = 1 + Math.min(isMicroSlime ? 0.3 : 0.8, this.mass / (isMicroSlime ? 660 : 280));
+    const scale = growthScale * (isMicroSlime ? 0.62 : 0.8);
+    const portrait = isMicroSlime ? this.makeMicroSlimeArt(scale) : this.makeSlimeArt(scale);
+    portrait.root.y = isMicroSlime ? 39 : 0;
     this.slime.add(portrait.root);
     this.slimeArt = portrait.root;
     this.slimeEyes = portrait.eyes;
     this.slimeGlints = portrait.glints;
     this.slimeMouth = portrait.mouth;
-    this.slimeBaseScale = { x: scale, y: scale * 0.88 };
-    this.slimeRadius = 52 * scale;
+    // Keep the authored pixel-sprite scale when idle animation updates the
+    // body. The old value silently reset the sprite to 1x after each redraw.
+    this.slimeBaseScale = { x: scale * 3, y: scale * 3 };
+    this.slimeRadius = (isMicroSlime ? 30 : 52) * growthScale;
     this.startSlimeIdle();
   }
 
-  makeSlimeArt(scale = 1) {
-    const root = this.add.container(0, 0).setScale(scale, scale * 0.88);
-    const shapes = this.add.graphics();
-    paintPolygon(shapes, [[-78, 34], [-80, 6], [-70, -22], [-49, -49], [-14, -61], [22, -54], [53, -37], [75, -7], [70, 27], [49, 50], [15, 62], [-28, 58], [-62, 48]], 0x173f3c, 1, 0x091d20, 3);
-    paintPolygon(shapes, [[-69, 30], [-71, 7], [-59, -20], [-40, -42], [-11, -52], [19, -46], [47, -30], [63, -4], [59, 22], [39, 42], [11, 51], [-24, 48], [-56, 40]], 0x62cf78, 1, 0x31745a, 2);
-    paintPolygon(shapes, [[-51, 22], [-53, 0], [-38, -26], [-11, -36], [17, -31], [40, -13], [42, 10], [23, 31], [-7, 40], [-35, 32]], 0x9aef99, 0.72);
-    paintPolygon(shapes, [[-13, -29], [-28, -7], [-42, 3], [-47, -8], [-35, -23]], 0xd8ffd2, 0.72);
-    paintPolygon(shapes, [[31, -18], [49, -7], [53, 8], [46, 13], [39, -1]], 0x347d61, 0.36);
-    const eyeA = this.add.ellipse(-22, 2, 13, 19, 0x102f30);
-    const eyeB = this.add.ellipse(22, 2, 13, 19, 0x102f30);
-    const glintA = this.add.circle(-20, -2, 3, 0xf4fff0);
-    const glintB = this.add.circle(24, -2, 3, 0xf4fff0);
-    const mouth = this.add.arc(0, 19, 18, 15, 165, false, 0x174b43, 0).setStrokeStyle(3, 0x174b43, 0.94);
-    root.add([shapes, eyeA, eyeB, glintA, glintB, mouth]);
+  makeSlimeArtTemplate(scale = 1) {
+    const pixelTexture = (key, width, height, draw) => {
+      if (!this.textures.exists(key)) {
+        const canvas = this.textures.createCanvas(key, width, height).getSourceImage();
+        draw(canvas.getContext('2d'));
+        this.textures.get(key).refresh();
+      }
+      const texture = this.textures.get(key);
+      texture.setFilter?.(Phaser.Textures.FilterMode.NEAREST);
+      return texture;
+    };
+    const logicalPixel = 2;
+    const block = (ctx, x, y, color) => {
+      ctx.fillStyle = color;
+      ctx.fillRect(x * logicalPixel, y * logicalPixel, logicalPixel, logicalPixel);
+    };
+    const bodyBlock = (ctx, x, y, color) => block(ctx, x, y + 9, color);
+    const shape = [
+      [8, 8], [7, 10], [5, 14], [3, 18], [2, 20], [1, 22],
+      [1, 22], [0, 23], [0, 23], [0, 24], [0, 24], [0, 24],
+      [1, 23], [0, 24], [0, 24], [0, 24], [1, 23], [2, 21],
+    ];
+    const cells = [];
+    shape.forEach(([left, width], y) => {
+      for (let x = left; x < left + width; x += 1) cells.push([x + 12, y]);
+    });
+    const hasCell = (x, y) => cells.some(([cx, cy]) => cx === x && cy === y);
+    const dyeColor = this.meta?.dyeColor || 'blue';
+    const bodyTexture = pixelTexture(`slime-pixel-template-v12-${dyeColor}`, 96, 72, (ctx) => {
+      ctx.imageSmoothingEnabled = false;
+      const palette = this.getSlimePalette();
+      cells.forEach(([x, y]) => {
+        const edge = !hasCell(x - 1, y) || !hasCell(x + 1, y) || !hasCell(x, y - 1) || !hasCell(x, y + 1);
+        bodyBlock(ctx, x, y, edge ? palette.outline : palette.base);
+      });
+      cells.forEach(([x, y]) => {
+        if (!hasCell(x, y) || !hasCell(x - 1, y) || !hasCell(x + 1, y) || !hasCell(x, y - 1) || !hasCell(x, y + 1)) return;
+        const localX = x - 12;
+        const lowerCore = (y === 14 && localX >= 14 && localX <= 16)
+          || (y === 15 && localX >= 13 && localX <= 18)
+          || (y === 16 && localX >= 11 && localX <= 18)
+          || (y === 17 && localX >= 10 && localX <= 16);
+        const leftLightLimit = [null, null, 11, 11, 12, 10, 10, 9, 8, 7, 6];
+        const isLeftLight = y <= 10 && localX <= leftLightLimit[y];
+        const color = lowerCore ? palette.shadow : (isLeftLight ? palette.light : palette.base);
+        bodyBlock(ctx, x, y, color);
+      });
+      [[7, 4], [8, 4], [6, 5], [7, 5], [6, 6]].forEach(([x, y]) => bodyBlock(ctx, x + 12, y, palette.highlight));
+    });
+    const eyeTexture = pixelTexture('slime-pixel-eye-v7', 12, 16, (ctx) => {
+      ctx.fillStyle = '#12245f';
+      ctx.fillRect(3, 2, 6, 1); ctx.fillRect(2, 3, 8, 9); ctx.fillRect(3, 12, 6, 1);
+      ctx.fillStyle = '#ffffff'; ctx.fillRect(3, 3, 3, 3);
+      ctx.fillStyle = '#7de0ee'; ctx.fillRect(7, 9, 2, 3);
+    });
+    const blushTexture = pixelTexture('slime-pixel-blush-v4', 8, 4, (ctx) => {
+      ctx.fillStyle = '#f19ab5'; ctx.fillRect(2, 1, 4, 2);
+    });
+    const mouthTexture = pixelTexture('slime-pixel-mouth-v5', 8, 6, (ctx) => {
+      ctx.fillStyle = '#12245f';
+      ctx.fillRect(3, 2, 2, 1);
+    });
+    const root = this.add.container(0, 0).setScale(scale * 3, scale * 3);
+    const body = this.add.image(0, 0, bodyTexture).setOrigin(0.5);
+    const eyeA = this.add.image(-10, 7, eyeTexture).setOrigin(0.5);
+    const eyeB = this.add.image(10, 7, eyeTexture).setOrigin(0.5);
+    const blushA = this.add.image(-15, 13, blushTexture).setOrigin(0.5);
+    const blushB = this.add.image(15, 13, blushTexture).setOrigin(0.5);
+    const mouth = this.add.image(0, 14, mouthTexture).setOrigin(0.5);
+    const glintA = this.add.rectangle(-13, -7, 1, 1, 0xf4fff0).setAlpha(0);
+    const glintB = this.add.rectangle(9, -7, 1, 1, 0xf4fff0).setAlpha(0);
+    root.add([body, eyeA, eyeB, blushA, blushB, mouth, glintA, glintB]);
     return { root, eyes: [eyeA, eyeB], glints: [glintA, glintB], mouth };
+  }
+
+  makeSlimeArt(scale = 1) {
+    return this.makeSlimeArtTemplate(scale);
+  }
+
+  getSlimePalette() {
+    const palettes = {
+      blue: { outline: '#122c70', shadow: '#357ac7', base: '#55c8ee', light: '#8ce4f3', highlight: '#e7ffff' },
+      red: { outline: '#70253d', shadow: '#c75162', base: '#ed6f80', light: '#f59aa3', highlight: '#fff0ed' },
+      green: { outline: '#174f45', shadow: '#3d9c78', base: '#62d29b', light: '#9be8b7', highlight: '#efffe8' },
+      yellow: { outline: '#72531c', shadow: '#c99a38', base: '#efd064', light: '#f8e59a', highlight: '#fffbe4' },
+      purple: { outline: '#4b2b70', shadow: '#8653b4', base: '#b079dc', light: '#d0a3ed', highlight: '#f8ecff' },
+    };
+    return palettes[this.meta?.dyeColor] || palettes.blue;
+  }
+
+  makeMicroSlimeArt(scale = 1) {
+    const key = 'slime-micro-stage-v2';
+    if (!this.textures.exists(key)) {
+      const canvas = this.textures.createCanvas(key, 56, 34).getSourceImage();
+      const ctx = canvas.getContext('2d');
+      ctx.imageSmoothingEnabled = false;
+      const unit = 2;
+      const rows = [
+        [10, 8], [8, 12], [6, 16], [4, 20], [3, 22], [2, 24],
+        [1, 26], [1, 26], [0, 28], [0, 28], [0, 28], [0, 28],
+        [1, 26], [2, 24], [3, 22], [5, 18],
+      ];
+      const cells = new Set();
+      rows.forEach(([left, width], y) => {
+        for (let x = left; x < left + width; x += 1) cells.add(`${x},${y}`);
+      });
+      const has = (x, y) => cells.has(`${x},${y}`);
+      const palette = this.getSlimePalette();
+      const paint = (x, y, color) => {
+        ctx.fillStyle = color;
+        ctx.fillRect(x * unit, (y + 1) * unit, unit, unit);
+      };
+      cells.forEach((cell) => {
+        const [x, y] = cell.split(',').map(Number);
+        const edge = !has(x - 1, y) || !has(x + 1, y) || !has(x, y - 1) || !has(x, y + 1);
+        let color = palette.base;
+        if (edge) color = palette.outline;
+        else if (y >= 12 || (x >= 21 && y >= 8)) color = palette.shadow;
+        else if (x <= 9 && y <= 6) color = palette.light;
+        paint(x, y, color);
+      });
+      [[8, 3], [9, 3], [7, 4], [8, 4], [6, 5]].forEach(([x, y]) => {
+        if (has(x, y)) paint(x, y, palette.highlight);
+      });
+      this.textures.get(key).refresh();
+    }
+    this.textures.get(key).setFilter?.(Phaser.Textures.FilterMode.NEAREST);
+    const root = this.add.container(0, 0).setScale(scale * 3, scale * 3);
+    root.add(this.add.image(0, 0, key).setOrigin(0.5, 1));
+    return { root, eyes: null, glints: null, mouth: null };
   }
 
   startSlimeIdle() {
@@ -237,83 +282,35 @@ class SlimeDungeonScene extends Phaser.Scene {
       ease: 'Back.out',
       onComplete: () => this.startSlimeIdle(),
     });
-    this.tweens.add({ targets: this.slimeMouth, scaleX: 1.36, scaleY: 1.6, duration: 90, yoyo: true, ease: 'Sine.inOut' });
+    if (this.slimeMouth?.active) {
+      this.tweens.add({ targets: this.slimeMouth, scaleX: 1.36, scaleY: 1.6, duration: 90, yoyo: true, ease: 'Sine.inOut' });
+    }
   }
 
   createBonePiles() {
-    this.bonePiles.push(this.createBonePile(142, 548, 1));
-    if (this.meta.extraPile) this.bonePiles.push(this.createBonePile(1018, 548, -1));
+    if (this.meta.fusedPile) {
+      this.bonePiles.push(this.createBonePile(580, 548, 1, 1.22));
+    } else {
+      this.bonePiles.push(this.createBonePile(142, 548, 1));
+      if (this.meta.extraPile) this.bonePiles.push(this.createBonePile(1018, 548, -1));
+    }
     this.nextPileIndex = 0;
   }
 
-  createBonePile(x, y, direction) {
+  createBonePile(x, y, direction, scale = 1) {
     const root = this.add.container(x, y).setDepth(8);
-    const visual = this.add.container(0, 0);
-    const artGroup = this.add.container(0, 0).setScale(direction, 1);
-    const shadow = this.add.graphics();
-    paintPolygon(shadow, [[-78, 26], [-50, 18], [8, 17], [78, 26], [53, 39], [-38, 40]], 0x05090c, 0.68);
-    const pileArt = this.add.graphics();
-    const outline = this.add.graphics().setAlpha(0.78);
-    const pileEdge = [[-79, 22], [-73, 2], [-59, -13], [-38, -20], [-22, -31], [4, -34], [24, -27], [46, -23], [64, -10], [76, 5], [81, 22], [61, 32], [27, 38], [-18, 38], [-54, 33]];
-    const skullEdge = [[-24, -8], [-19, -23], [-7, -31], [10, -30], [22, -21], [26, -7], [20, 4], [12, 8], [10, 17], [-9, 17], [-11, 8], [-20, 4]];
-    const pileBones = [[-59, 18, -28, -8], [25, 19, 58, -5], [-43, 24, 49, 10]];
-    paintPolygon(pileArt, pileEdge, 0x202a29, 1, 0x59665f, 2, 0.64);
-    paintPolygon(pileArt, [[-67, 20], [-55, 2], [-36, -10], [-10, -14], [17, -10], [43, -1], [68, 19], [51, 27], [13, 31], [-29, 30]], 0x39413b, 0.82);
-    const outlinePileBone = (x1, y1, x2, y2) => {
-      outline.lineStyle(11, 0xfffbef, 1).strokeLineShape(new Phaser.Geom.Line(x1, y1, x2, y2));
-      outline.fillStyle(0xfffbef, 1);
-      [[x1 - 2, y1 + 2], [x1 + 2, y1 - 2], [x2 - 2, y2 + 2], [x2 + 2, y2 - 2]].forEach(([px, py]) => outline.fillCircle(px, py, 6));
-    };
-    pileBones.forEach((bone) => outlinePileBone(...bone));
-    outline.lineStyle(7, 0xfffbef, 1).strokePoints(skullEdge.map(([px, py]) => ({ x: px, y: py })), true);
-    const drawPileBone = (x1, y1, x2, y2) => {
-      pileArt.lineStyle(7, COLORS.boneShade, 1).strokeLineShape(new Phaser.Geom.Line(x1, y1, x2, y2));
-      pileArt.lineStyle(4, COLORS.bone, 1).strokeLineShape(new Phaser.Geom.Line(x1, y1, x2, y2));
-      pileArt.fillStyle(COLORS.bone, 1);
-      pileArt.fillCircle(x1 - 2, y1 + 2, 4);
-      pileArt.fillCircle(x1 + 2, y1 - 2, 4);
-      pileArt.fillCircle(x2 - 2, y2 + 2, 4);
-        pileArt.fillCircle(x2 + 2, y2 - 2, 4);
-    };
-    pileBones.forEach((bone) => drawPileBone(...bone));
-    paintPolygon(pileArt, skullEdge, COLORS.bone, 1, COLORS.boneShade, 2, 1);
-    paintPolygon(pileArt, [[-15, -14], [-8, -18], [-2, -14], [-5, -7], [-12, -7]], 0x202726, 1);
-    paintPolygon(pileArt, [[6, -14], [13, -18], [19, -13], [16, -7], [9, -7]], 0x202726, 1);
-    paintPolygon(pileArt, [[-2, -5], [4, -5], [1, 1]], 0x746a55, 1);
-    pileArt.lineStyle(1, 0x756a55, 0.8).strokeLineShape(new Phaser.Geom.Line(-7, 11, 8, 11));
-    artGroup.add([shadow, outline, pileArt]);
-    visual.add(artGroup);
-    root.add(visual);
-    return { root, artGroup, x, y, direction };
+    const prop = DungeonProps.bonePile(this, direction);
+    root.setScale(scale).setSize(152, 88).setInteractive({ useHandCursor: true });
+    root.add(prop.root);
+    const pile = { root, artGroup: prop.artGroup, x, y, direction, scale, radius: 116 * scale, nextSearchAt: 0 };
+    root.on('pointerdown', () => this.manualSearchPile(pile));
+    return pile;
   }
 
   makeBoneArt(type = 'bone', size = 1) {
-    const root = this.add.container(0, 0);
-    if (type === 'adventurer') {
-      const trophy = this.add.graphics();
-      paintPolygon(trophy, [[-29, 17], [-29, -15], [-10, -28], [17, -23], [30, -4], [23, 18], [3, 29]], 0xd99b62, 1, 0xf3c957, 7);
-      trophy.lineStyle(2, 0x553835, 0.9).strokePoints([[-29, 17], [-29, -15], [-10, -28], [17, -23], [30, -4], [23, 18], [3, 29]].map(([x, y]) => ({ x, y })), true);
-      paintPolygon(trophy, [[-18, -6], [-7, -20], [10, -17], [21, -3], [9, 12], [-12, 15]], 0xf0c378, 1, 0x6d4937, 2);
-      trophy.lineStyle(5, 0x794d3c, 1).strokeLineShape(new Phaser.Geom.Line(-24, 18, 28, -21));
-      trophy.fillStyle(0xffdb79, 1).fillTriangle(-3, -5, 4, 3, -4, 4);
-      root.add(trophy);
-      return root;
-    }
-    const g = this.add.graphics();
-    g.lineStyle(13, 0xf3c957, 1).strokeLineShape(new Phaser.Geom.Line(-19, 13, 19, -13));
-    g.fillStyle(0xf3c957, 1);
-    [[-22, 9], [-17, 16], [22, -9], [17, -16]].forEach(([x, y]) => g.fillCircle(x, y, 8));
-    g.lineStyle(9, COLORS.boneShade, 1).strokeLineShape(new Phaser.Geom.Line(-19, 13, 19, -13));
-    g.fillStyle(COLORS.boneShade, 1);
-    [[-22, 9], [-17, 16], [22, -9], [17, -16]].forEach(([x, y]) => g.fillCircle(x, y, 6));
-    g.lineStyle(6, COLORS.bone, 1).strokeLineShape(new Phaser.Geom.Line(-19, 13, 19, -13));
-    g.fillStyle(COLORS.bone, 1);
-    [[-22, 9], [-17, 16], [22, -9], [17, -16]].forEach(([x, y]) => g.fillCircle(x, y, 4.5));
-    g.lineStyle(1.5, COLORS.boneShade, 0.72);
-    g.strokeLineShape(new Phaser.Geom.Line(-5, 5, 2, 9));
-    g.strokeLineShape(new Phaser.Geom.Line(7, -7, 13, -11));
-    root.add(g).setScale(size);
-    return root;
+    const sprite = makeItemSprite(this, type);
+    sprite.setScale(size);
+    return sprite;
   }
 
   spawnInitialBones() {
@@ -325,7 +322,7 @@ class SlimeDungeonScene extends Phaser.Scene {
 
   getBoneDropPoint(sourcePile = this.bonePiles[0]) {
     const blockers = [
-      ...this.bonePiles.map((pile) => ({ x: pile.x, y: pile.y, radius: 116 })),
+      ...this.bonePiles.map((pile) => ({ x: pile.x, y: pile.y, radius: pile.radius || 116 })),
       { x: this.slime.x, y: this.slime.y, radius: this.slimeRadius + 52 },
       ...this.bones.filter((bone) => bone.active && !bone.consumed).map((bone) => ({
         x: bone.homeX,
@@ -341,15 +338,17 @@ class SlimeDungeonScene extends Phaser.Scene {
     const bone = this.add.container(options.fromPile ? sourcePile.x + sourcePile.direction * 42 : x, options.fromPile ? sourcePile.y - 28 : y).setDepth(10);
     bone.setSize(58, 50);
     bone.foodType = type;
-    bone.foodData = type === 'bone' ? { ...FOOD.bone, value: getBoneValue(this.meta) } : FOOD[type];
+    bone.isLarge = type === 'bone' && Math.random() < getLargeBoneChance(this.meta);
+    bone.foodData = type === 'bone'
+      ? { ...FOOD.bone, name: bone.isLarge ? '大骨片' : FOOD.bone.name, value: getBoneValue(this.meta, { large: bone.isLarge, boneBonus: this.boneValueBonus }) }
+      : FOOD[type];
     bone.homeX = x; bone.homeY = y; bone.isSettled = !options.fromPile; bone.consumed = false; bone.wasMoved = false;
-    bone.add(this.makeBoneArt(type, type === 'bone' ? 0.66 : 0.92));
+    bone.add(this.makeBoneArt(type, type === 'bone' ? bone.isLarge ? 0.9 : 0.66 : 0.92));
     bone.setAngle(options.angle || Phaser.Math.Between(-45, 45));
     this.bones.push(bone);
     if (options.fromPile) {
       bone.setScale(0.3); bone.alpha = 0.2;
       this.tweens.add({ targets: bone, x, y, scale: 1, alpha: 1, angle: options.angle || Phaser.Math.Between(-45, 45), duration: 680, ease: 'Back.out', onComplete: () => { bone.isSettled = true; this.createBoneLanding(bone); this.tweenBoneIdle(bone); } });
-      this.updateEarlyGuide(1);
     }
     this.tweenBoneIdle(bone);
     return bone;
@@ -362,7 +361,7 @@ class SlimeDungeonScene extends Phaser.Scene {
 
   createBoneLanding(bone) {
     for (let i = 0; i < 5; i += 1) {
-      const chip = this.add.polygon(bone.x, bone.y + 12, [0, -3, 2, 0, 0, 3, -2, 0], 0xf2c95d, 0.88).setDepth(12);
+      const chip = PixelEffects.particle(this, 0xf2c95d, 4).setPosition(bone.x, bone.y + 12).setAlpha(0.88).setDepth(12);
       this.tweens.add({
         targets: chip,
         x: chip.x + Phaser.Math.Between(-28, 28),
@@ -385,9 +384,8 @@ class SlimeDungeonScene extends Phaser.Scene {
       this.tweens.killTweensOf(bone);
       this.drag = { bone, pointerId: pointer.id, startX: pointer.x, startY: pointer.y, moved: false };
       bone.setDepth(18).setScale(1.16);
+      bone.list[0]?.pixelGlow?.setVisible(true).setAlpha(0.95);
       this.setSlimeHungry(true);
-      this.updateEarlyGuide(2);
-      this.showToast('把骨头拖到史莱姆的嘴边', 1000);
     });
     this.input.on('pointermove', (pointer) => {
       if (!this.drag) return;
@@ -397,10 +395,18 @@ class SlimeDungeonScene extends Phaser.Scene {
       if (Math.hypot(pointer.x - this.drag.startX, pointer.y - this.drag.startY) > 9) this.drag.moved = true;
       bone.x = clamp(pointer.x, ARENA.left + 38, ARENA.right - 38);
       bone.y = clamp(pointer.y, ARENA.top + 32, ARENA.bottom - 52);
+      if (distance(bone, this.slime) <= getMagnetRadius(this.meta) && canConsume(this.mass, bone.foodData.value)) {
+        this.feedBone(bone);
+        if (bone.consumed) {
+          this.drag = null;
+          this.setSlimeHungry(false);
+        }
+      }
     });
     this.input.on('pointerup', (pointer) => {
       if (!this.drag || pointer.id !== this.drag.pointerId) return;
       const { bone, moved } = this.drag; this.drag = null; bone.setScale(1); this.setSlimeHungry(false);
+      bone.list[0]?.pixelGlow?.setVisible(false);
       if (!bone.active) return;
       if (moved && distance(bone, this.slime) > getMagnetRadius(this.meta)) {
         this.returnBone(bone); return;
@@ -421,68 +427,109 @@ class SlimeDungeonScene extends Phaser.Scene {
     this.setSlimeHungry(false);
     if (bone?.active) {
       bone.setScale(1).setDepth(10);
+      bone.list[0]?.pixelGlow?.setVisible(false);
       this.returnBone(bone, false);
     }
   }
 
-  returnBone(bone, showHint = true) {
+  returnBone(bone, showHint = false) {
     if (!bone.active || bone.consumed) return;
     bone.wasMoved = false;
     bone.setDepth(10);
     this.tweens.add({ targets: bone, x: bone.homeX, y: bone.homeY, angle: 0, duration: 420, ease: 'Back.out', onComplete: () => this.tweenBoneIdle(bone) });
-    if (showHint) this.showToast('碎骨太远了，拖到史莱姆嘴边', 1200);
+    if (showHint) this.showToast('碎骨太远了，拖进史莱姆体内', 1200);
   }
 
   feedBone(bone) {
     if (!bone.active || bone.consumed || this.isEnded || this.inBattle || !bone.isSettled) return;
-    if (!canConsume(this.mass, bone.foodData.value)) {
-      this.returnBone(bone); this.showToast('史莱姆还太小，先多吃几根骨头', 1500); return;
+    if (bone.foodType === 'bone') {
+      bone.foodData.value = getBoneValue(this.meta, {
+        large: bone.isLarge,
+        boneBonus: this.boneValueBonus,
+      });
+    }
+    if (!canConsume(this.mass, bone.foodData.value)) { this.returnBone(bone); return; }
+    const massCap = getEvolutionMassCap(this.meta);
+    if (this.mass >= massCap) {
+      this.returnBone(bone);
+      return;
     }
     bone.consumed = true;
-    const growth = calculateGrowth(bone.foodData.value, this.meta);
+    const growth = Math.min(calculateGrowth(bone.foodData.value, this.meta), massCap - this.mass);
     this.bones = this.bones.filter((item) => item !== bone);
     this.tweens.add({ targets: bone, x: this.slime.x, y: this.slime.y - 4, scale: 0.08, alpha: 0, duration: 360, ease: 'Back.in', onComplete: () => bone.destroy() });
     this.mass += growth; this.coins += growth;
     this.itemsFed += 1;
-    this.updateEarlyGuide(3);
     this.drawSlime();
     this.playSlimeChew();
     this.createFeedBurst(bone.foodData.color);
     this.updateHud();
-    this.showToast(`${bone.foodData.name} 被吞噬  ·  进化能量 +${growth}`, 1150);
+    this.showFeedFloat(`+${growth}`, '#e7f5c5');
   }
 
   createFeedBurst(color) {
-    for (let i = 0; i < 10; i += 1) {
-      const spark = this.add.polygon(this.slime.x, this.slime.y - 18, [0, -5, 4, 0, 0, 5, -4, 0], color, 0.9).setDepth(17);
+    for (let i = 0; i < 6; i += 1) {
+      const spark = PixelEffects.particle(this, color, 4).setPosition(this.slime.x, this.slime.y - 18).setAlpha(0.9).setDepth(17);
       this.tweens.add({ targets: spark, x: spark.x + Phaser.Math.Between(-86, 86), y: spark.y + Phaser.Math.Between(-60, 12), alpha: 0, scale: 0.3, duration: 420 + i * 20, onComplete: () => spark.destroy() });
     }
   }
 
   createPileBurst(pile) {
-    for (let i = 0; i < 8; i += 1) {
-      const chip = this.add.polygon(pile.x + Phaser.Math.Between(-38, 38), pile.y + Phaser.Math.Between(-20, 10), [0, -3, 3, 0, 0, 3, -3, 0], COLORS.bone, 0.9).setDepth(16);
+    const burst = PixelEffects.particle(this, 0xffefbd, 8).setPosition(pile.x, pile.y - 14).setAlpha(0.72).setDepth(16);
+    this.tweens.add({ targets: burst, scale: 0.2, alpha: 0, duration: 240, ease: 'Cubic.out', onComplete: () => burst.destroy() });
+    for (let i = 0; i < 7; i += 1) {
+      const chip = PixelEffects.boneChip(this, i % 3).setPosition(pile.x + Phaser.Math.Between(-26, 26), pile.y - 4 + Phaser.Math.Between(-8, 8)).setAlpha(0.96).setDepth(16).setScale(0.74 + (i % 3) * 0.1);
       this.tweens.add({
         targets: chip,
-        x: chip.x + Phaser.Math.Between(-50, 58),
-        y: chip.y + Phaser.Math.Between(-64, -15),
+        x: chip.x + Phaser.Math.Between(-54, 58),
+        y: chip.y - 38 - i * 4 + Phaser.Math.Between(-10, 8),
         alpha: 0,
-        angle: Phaser.Math.Between(-110, 110),
-        duration: 380 + i * 25,
+        angle: Phaser.Math.Between(-70, 70),
+        scale: 0.28,
+        duration: 460 + i * 34,
         ease: 'Cubic.out',
         onComplete: () => chip.destroy(),
       });
     }
+    for (let i = 0; i < 3; i += 1) {
+      const dust = PixelEffects.particle(this, PixelPalette.mossLight, 4).setPosition(pile.x + Phaser.Math.Between(-24, 24), pile.y + 8).setAlpha(0.42).setDepth(15);
+      this.tweens.add({ targets: dust, x: dust.x + Phaser.Math.Between(-24, 24), y: dust.y - Phaser.Math.Between(12, 24), alpha: 0, duration: 380 + i * 40, onComplete: () => dust.destroy() });
+    }
+  }
+
+  spawnPileBone(sourcePile) {
+    const point = this.getBoneDropPoint(sourcePile);
+    if (!point) return false;
+    this.spawnBone('bone', point.x, point.y, { fromPile: true, sourcePile });
+    this.pileBurst(sourcePile);
+    return true;
+  }
+
+  manualSearchPile(pile) {
+    if (this.isEnded || this.inBattle || !this.meta.boneSearch) return;
+    const cooldown = getBoneSearchCooldown(this.meta);
+    if (this.time.now < pile.nextSearchAt) {
+      this.showToast(`骨堆还需要 ${Math.ceil((pile.nextSearchAt - this.time.now) / 1000)} 秒`, 900);
+      return;
+    }
+    if (this.bones.length >= 9) {
+      this.showToast('场地上的骨片太多了', 900);
+      return;
+    }
+    pile.nextSearchAt = this.time.now + cooldown * 1000;
+    this.tweens.killTweensOf(pile.root);
+    this.tweens.add({ targets: pile.root, angle: pile.direction * 7, duration: 120, yoyo: true, repeat: 1, ease: 'Sine.inOut' });
+    this.spawnPileBone(pile);
   }
 
   update(time) {
     if (this.isEnded) return;
     if (!this.inBattle && time >= this.nextBoneAt && this.bones.length < 9) {
       const sourcePile = this.bonePiles[this.nextPileIndex % this.bonePiles.length];
-      const point = this.getBoneDropPoint(sourcePile);
-      if (point) {
-        this.spawnBone('bone', point.x, point.y, { fromPile: true, sourcePile });
-        this.pileBurst(sourcePile);
+      if (this.spawnPileBone(sourcePile)) {
+        if (this.bones.length < 9 && Math.random() < getBonusProductionChance(this.meta)) {
+          this.spawnPileBone(sourcePile);
+        }
         this.nextPileIndex += 1;
       }
       this.nextBoneAt = time + getBoneSpawnInterval(this.mass, this.meta);
@@ -491,7 +538,7 @@ class SlimeDungeonScene extends Phaser.Scene {
     const remaining = Math.max(0, (this.nextWaveAt - time) / 1000);
     this.timerText.setText(this.inBattle ? '袭击中 · 史莱姆自动迎战' : `袭击倒计时  ${remaining.toFixed(1)}s`);
     this.timerText.setColor(remaining < 5 && !this.inBattle ? '#ff776e' : '#f4c76b');
-    this.evolutionFill.width = 304 * clamp(this.mass / Math.max(150, config.power), 0, 1);
+    this.evolutionFill.displayWidth = this.evolutionMaxWidth * clamp(this.mass / getEvolutionMassCap(this.meta), 0, 1);
     if (!this.inBattle && time >= this.nextWaveAt) this.startWave();
   }
 
@@ -508,28 +555,21 @@ class SlimeDungeonScene extends Phaser.Scene {
     this.cancelDrag();
     this.inBattle = true;
     const config = getWaveConfig(this.wave);
-    this.updateEarlyGuide(4);
     this.showToast(config.title + ' 抵达地牢入口', 950);
     this.playEncounterTransition(config);
   }
 
   playEncounterTransition(config) {
     const transition = this.add.container(0, 0).setDepth(40);
-    const veil = this.add.rectangle(580, 360, WIDTH, HEIGHT, 0x05080d, 0);
-    const leftSlat = this.add.graphics();
-    const rightSlat = this.add.graphics();
-    paintPolygon(leftSlat, [[0, 0], [676, 0], [426, HEIGHT], [0, HEIGHT]], 0x111c28, 0.98);
-    paintPolygon(leftSlat, [[0, 104], [550, 0], [520, 56], [0, 164]], 0x6c3940, 0.82);
-    paintPolygon(rightSlat, [[484, 0], [WIDTH, 0], [WIDTH, HEIGHT], [732, HEIGHT]], 0x17212d, 0.98);
-    paintPolygon(rightSlat, [[638, HEIGHT], [WIDTH, 562], [WIDTH, 640], [589, HEIGHT]], 0x6c3940, 0.82);
-    leftSlat.x = -690;
-    rightSlat.x = 690;
+    const veil = PixelUI.veil(this, WIDTH, HEIGHT, 0).setPosition(580, 360);
+    const leftSlat = PixelEffects.encounterCurtain(this, 'left', WIDTH / 2, HEIGHT).setOrigin(0).setPosition(-WIDTH / 2, 0);
+    const rightSlat = PixelEffects.encounterCurtain(this, 'right', WIDTH / 2, HEIGHT).setOrigin(0).setPosition(WIDTH, 0);
     const title = this.add.text(580, 301, '遭 遇 ！', { fontFamily: 'serif', fontSize: '64px', fontStyle: 'bold', color: '#fff1c7', stroke: '#27151a', strokeThickness: 12 }).setOrigin(0.5).setAlpha(0);
     const subtitle = this.add.text(580, 367, config.title + '  ·  来袭战力 ' + formatNumber(config.power), { fontFamily: 'sans-serif', fontSize: '16px', fontStyle: 'bold', color: '#d8e3e1', letterSpacing: 2 }).setOrigin(0.5).setAlpha(0);
     transition.add([veil, leftSlat, rightSlat, title, subtitle]);
     this.tweens.add({ targets: veil, alpha: 0.78, duration: 180 });
     this.tweens.add({ targets: leftSlat, x: 0, duration: 300, ease: 'Cubic.out' });
-    this.tweens.add({ targets: rightSlat, x: 0, duration: 300, ease: 'Cubic.out' });
+    this.tweens.add({ targets: rightSlat, x: WIDTH / 2, duration: 300, ease: 'Cubic.out' });
     this.tweens.add({ targets: [title, subtitle], alpha: 1, duration: 180, delay: 180 });
     this.time.delayedCall(620, () => {
       transition.destroy(true);
@@ -542,35 +582,26 @@ class SlimeDungeonScene extends Phaser.Scene {
     const battle = this.add.container(0, 0).setDepth(42);
     this.battle = battle;
 
-    const backdrop = this.add.graphics();
-    backdrop.fillStyle(0x07111b, 1).fillRect(0, 0, WIDTH, HEIGHT);
-    paintPolygon(backdrop, [[0, 0], [WIDTH, 0], [WIDTH, 192], [892, 153], [612, 188], [295, 144], [0, 190]], 0x172632, 1);
-    paintPolygon(backdrop, [[0, 196], [210, 168], [433, 222], [699, 175], [955, 226], [WIDTH, 186], [WIDTH, 458], [0, 458]], 0x10202a, 1);
-    paintPolygon(backdrop, [[0, 482], [184, 414], [404, 465], [610, 423], [807, 470], [1018, 424], [WIDTH, 465], [WIDTH, HEIGHT], [0, HEIGHT]], 0x0a151d, 1);
-    paintPolygon(backdrop, [[0, 469], [154, 431], [303, 461], [445, 436], [587, 464], [741, 431], [932, 466], [WIDTH, 426], [WIDTH, 534], [0, 548]], 0x24353b, 0.78, 0x49605c, 1, 0.52);
+    const backdrop = makeBattleBackdrop(this, WIDTH, HEIGHT);
     battle.add(backdrop);
 
     const header = this.add.container(580, 54);
-    header.add(this.add.rectangle(0, 0, 600, 54, 0x0b141d, 0.94).setStrokeStyle(1, 0x596a6c, 0.82));
+    header.add(pixelPanel(this, 0, 0, 600, 54, PixelPalette.edge));
     header.add(this.add.text(0, -10, '地牢遭遇战', { fontFamily: 'serif', fontSize: '22px', fontStyle: 'bold', color: '#f7edcf' }).setOrigin(0.5));
     header.add(this.add.text(0, 13, config.title + '  ·  战力 ' + formatNumber(config.power), { fontFamily: 'sans-serif', fontSize: '11px', color: '#aebec0', letterSpacing: 1 }).setOrigin(0.5));
     battle.add(header);
 
-    const leftPlatform = this.add.graphics();
-    paintPolygon(leftPlatform, [[116, 494], [265, 446], [452, 470], [512, 520], [397, 548], [206, 536]], 0x1d4d4b, 0.95, 0x77a582, 2, 0.72);
-    paintPolygon(leftPlatform, [[177, 504], [279, 476], [422, 492], [449, 513], [377, 526], [230, 521]], 0x40705f, 0.34);
-    const rightPlatform = this.add.graphics();
-    paintPolygon(rightPlatform, [[651, 501], [770, 454], [1001, 461], [1080, 512], [984, 549], [749, 539]], 0x4a3543, 0.96, 0xa06d69, 2, 0.74);
-    paintPolygon(rightPlatform, [[718, 506], [810, 480], [989, 484], [1030, 509], [957, 526], [784, 520]], 0x7d5360, 0.3);
+    const leftPlatform = this.makeBattlePlatform(315, 493, 'slime');
+    const rightPlatform = this.makeBattlePlatform(877, 493, 'enemy');
     battle.add([leftPlatform, rightPlatform]);
 
-    const slime = this.createBattleSlime(315, 401, 1.62);
+    const slime = this.createBattleSlime(315, 401, 0.82);
     const party = this.createAdventurerParty(877, 405, config.wave);
     battle.add([slime.root, party.root]);
 
     this.battleSpeed = 1;
-    const playerCard = this.createBattleCard(battle, 197, 142, '黏液核心', '进化能量', 0x65d682, 0x153b36);
-    const enemyName = config.wave === 1 ? '木剑见习者' : '冒险者小队';
+    const playerCard = this.createBattleCard(battle, 197, 142, getSlimeStage(this.meta), '进化能量', 0x65d682, 0x153b36);
+    const enemyName = config.wave === 1 ? '木剑见习者' : config.wave === 2 ? '老练的猎人' : '冒险者小队';
     const enemyCard = this.createBattleCard(battle, 963, 142, enemyName, '战力 ' + formatNumber(config.power), 0xe0827c, 0x4b2935);
     const timeline = this.createBattleTimeline(battle, config.wave);
     this.battleState = {
@@ -592,69 +623,66 @@ class SlimeDungeonScene extends Phaser.Scene {
     this.time.delayedCall(700, () => this.playBattleTurn(0));
   }
 
+  makeBattlePlatform(x, y, side) { return DungeonProps.groundPatch(this, side).setPosition(x, y); }
+
   createBattleCard(battle, x, y, label, detail, color, fillColor) {
     const card = this.add.container(x, y);
-    const bg = this.add.rectangle(0, 0, 286, 68, 0x0b141c, 0.92).setStrokeStyle(1, color, 0.8);
+    const bg = pixelPanel(this, 0, 0, 286, 68, color, 0x0b141c);
     const labelText = this.add.text(-124, -20, label, { fontFamily: 'sans-serif', fontSize: '15px', fontStyle: 'bold', color: '#edf3e7' });
     const detailText = this.add.text(-124, 1, detail, { fontFamily: 'sans-serif', fontSize: '10px', color: '#9bacaf' });
-    const barBg = this.add.rectangle(0, 23, 246, 10, 0x22313a, 1);
-    const barFill = this.add.rectangle(-123, 23, 246, 6, color, 1).setOrigin(0, 0.5);
+    const hpBar = PixelUI.bar(this, 0, 23, 246, 14, color);
+    const barBg = hpBar.background;
+    const barFill = hpBar.fill;
     const hpText = this.add.text(123, 1, '100 / 100', { fontFamily: 'sans-serif', fontSize: '10px', color: '#d9e6df' }).setOrigin(1, 0);
     card.add([bg, labelText, detailText, barBg, barFill, hpText]);
     battle.add(card);
-    return { card, barFill, hpText };
+    return { card, barFill, hpText, maxWidth: hpBar.maxWidth };
   }
 
   createBattleTimeline(battle, wave) {
     const panel = this.add.container(580, 618);
-    panel.add(this.add.rectangle(0, 0, 1012, 112, 0x0a121a, 0.96).setStrokeStyle(1, 0x44575c, 0.88));
-    panel.add(this.add.text(-472, -43, '行动竞速', { fontFamily: 'serif', fontSize: '17px', fontStyle: 'bold', color: '#f4e9cf' }));
-    const actionText = this.add.text(-292, -42, '所有单位在同一条行动轨上推进', { fontFamily: 'sans-serif', fontSize: '12px', color: '#9db5ad' });
+    panel.add(pixelPanel(this, 0, 0, 1012, 96, PixelPalette.edge));
+    panel.add(this.add.text(-472, -34, '行动轨道', { fontFamily: 'Microsoft YaHei, sans-serif', fontSize: '14px', fontStyle: 'bold', color: '#f4e9cf' }));
+    const actionText = this.add.text(-332, -34, '准备', { fontFamily: 'Microsoft YaHei, sans-serif', fontSize: '11px', color: '#9db5ad' });
     panel.add(actionText);
-    const speedButton = this.add.container(427, -42);
-    const speedBg = this.add.rectangle(0, 0, 92, 28, 0x213630, 1).setStrokeStyle(1, 0x79bd8c, 0.8).setInteractive({ useHandCursor: true });
+    const speedButton = this.add.container(432, -32);
+    const speedBg = pixelPanel(this, 0, 0, 80, 24, 0x79bd8c, 0x213630).setInteractive({ useHandCursor: true });
     const speedText = this.add.text(0, 0, '速度 1x', { fontFamily: 'sans-serif', fontSize: '12px', fontStyle: 'bold', color: '#d9f0d5' }).setOrigin(0.5);
     speedButton.add([speedBg, speedText]);
-    speedBg.on('pointerover', () => speedBg.setFillStyle(0x2d5143));
-    speedBg.on('pointerout', () => speedBg.setFillStyle(0x213630));
+    speedBg.on('pointerover', () => speedBg.setTint(0xc8ffe2));
+    speedBg.on('pointerout', () => speedBg.clearTint());
     speedBg.on('pointerdown', () => {
       this.battleSpeed = this.battleSpeed === 1 ? 2 : 1;
       speedText.setText(`速度 ${this.battleSpeed}x`);
-      speedBg.setFillStyle(this.battleSpeed === 2 ? 0x765531 : 0x213630);
+      speedBg.setTint(this.battleSpeed === 2 ? 0xe7bf69 : 0xffffff);
     });
     panel.add(speedButton);
 
-    const startX = -336;
-    const width = 738;
-    const track = this.add.rectangle(startX + width / 2, 12, width, 18, 0x1b2b33, 1).setStrokeStyle(1, 0x52666a, 0.9);
-    const finish = this.add.graphics();
-    finish.lineStyle(2, 0xf2dfab, 0.9);
-    finish.beginPath(); finish.moveTo(startX + width, -4); finish.lineTo(startX + width, 29); finish.strokePath();
-    panel.add([
-      this.add.text(startX - 32, 4, '起跑', { fontFamily: 'sans-serif', fontSize: '10px', color: '#839797' }).setOrigin(0.5),
-      this.add.text(startX + width + 31, 4, '行动', { fontFamily: 'sans-serif', fontSize: '10px', color: '#f1db9b' }).setOrigin(0.5),
-      track,
-      finish,
-    ]);
+    const startX = -404;
+    const width = 808;
+    const track = PixelUI.timeline(this, width).setPosition(startX + width / 2, 16);
+    const finish = PixelUI.sword(this).setPosition(startX + width - 2, 13);
+    panel.add([track, finish]);
 
-    const createRacer = (key, label, color, progress, labelY) => {
+    const createRacer = (key, label, color, progress) => {
       const token = this.add.container(startX + width * progress, 12);
-      token.add(this.add.polygon(0, 0, [0, -10, 9, -4, 9, 5, 0, 10, -9, 5, -9, -4], 0x0b1419, 1).setStrokeStyle(1, 0xf5f0d5, 0.74));
-      token.add(this.add.polygon(0, 0, [0, -6, 6, -3, 6, 3, 0, 6, -6, 3, -6, -3], color, 1));
-      token.add(this.add.text(0, labelY, label, { fontFamily: 'sans-serif', fontSize: '10px', fontStyle: 'bold', color: '#e9efe1', stroke: '#091014', strokeThickness: 3 }).setOrigin(0.5));
+      const icon = PixelUI.timelineIcon(this, key === 'slime' ? 'slime' : 'enemy');
+      const frame = pixelPanel(this, 0, 0, 24, 24, PixelPalette.white, PixelPalette.ink).setVisible(false);
+      token.add([frame, icon]);
       panel.add(token);
-      return { key, label, color, token, progress, startX, width };
+      return { key, label, color, token, frame, progress, startX, width };
     };
     const racerStyles = {
-      slime: ['史莱姆', 0x6edc8d, wave === 1 ? 0.12 : 0.09, -24],
-      rookie: ['木剑', 0xd89b65, 0.54, 28],
-      guard: ['盾卫', 0xe8a477, 0.26, 28],
-      archer: ['弓手', 0xd8c46e, 0.43, -24],
-      oracle: ['术士', 0xbc91e6, 0.58, 28],
+      slime: ['史莱姆', 0x6edc8d, wave === 1 ? 0.12 : 0.09],
+      rookie: ['木剑见习者', 0xd89b65, 0.54],
+      hunter: ['老练的猎人', 0xb98b59, 0.54],
+      guard: ['盾卫', 0xe8a477, 0.26],
+      archer: ['弓手', 0xd8c46e, 0.43],
+      oracle: ['术士', 0xbc91e6, 0.58],
     };
     const roster = ['slime', ...getBattleRacers(wave)].map((key) => [key, ...racerStyles[key]]);
-    const racers = Object.fromEntries(roster.map(([key, label, color, progress, labelY]) => (
-      [key, createRacer(key, label, color, progress, labelY)]
+    const racers = Object.fromEntries(roster.map(([key, label, color, progress]) => (
+      [key, createRacer(key, label, color, progress)]
     )));
     battle.add(panel);
     return { racers, actionText };
@@ -664,138 +692,48 @@ class SlimeDungeonScene extends Phaser.Scene {
     const root = this.add.container(x, y);
     root.baseX = x;
     root.baseY = y;
-    const shadow = this.add.graphics();
-    paintPolygon(shadow, [[-126, 78], [-68, 59], [10, 56], [122, 75], [70, 93], [-41, 97], [-114, 89]], 0x050a0e, 0.66);
-    const portrait = this.makeSlimeArt(scale);
-    root.add([shadow, portrait.root]);
-    return { root, art: portrait.root, baseX: x, baseY: y };
+    const isMicroSlime = (this.meta.evolution || 0) === 0;
+    const portrait = isMicroSlime ? this.makeMicroSlimeArt(scale * 0.7) : this.makeSlimeArt(scale);
+    portrait.root.y = isMicroSlime ? 76 : 30;
+    root.add(portrait.root);
+    return { root, art: portrait.root, artBaseScale: { x: portrait.root.scaleX, y: portrait.root.scaleY }, baseX: x, baseY: y };
   }
 
   createAdventurerParty(x, y, wave) {
     const root = this.add.container(x, y);
-    const shadow = this.add.graphics();
     const isRookie = wave === 1;
-    paintPolygon(shadow, isRookie
-      ? [[-70, 77], [-29, 58], [33, 57], [74, 78], [36, 96], [-43, 96]]
-      : [[-165, 77], [-101, 57], [-30, 53], [69, 58], [161, 78], [91, 96], [-66, 98], [-151, 88]], 0x050a0e, 0.68);
-    root.add(shadow);
+    const isHunter = wave === 2;
     const figures = {};
     const layout = isRookie
-      ? [['rookie', 0, -7, 1.54]]
-      : [
-        ['archer', -98, 5, 1.06],
-        ['guard', 0, -9, 1.32],
-        ['oracle', 100, 4, 1.07],
+      ? [['rookie', 0, 32, 2.55]]
+      : isHunter
+        ? [['hunter', 0, 32, 2.55]]
+        : [
+        ['archer', -98, 5, 0.78],
+        ['guard', 0, -9, 0.94],
+        ['oracle', 100, 4, 0.79],
       ];
     layout.forEach(([role, offsetX, offsetY, scale]) => {
       const figure = this.makeAdventurerFigure(offsetX, offsetY, role, scale);
       figures[role] = figure;
       root.add(figure);
     });
-    root.add(this.add.text(0, 90, isRookie ? '木剑见习者' : '王国讨伐队', { fontFamily: 'sans-serif', fontSize: '11px', fontStyle: 'bold', color: '#f0d7c0', stroke: '#25151d', strokeThickness: 4 }).setOrigin(0.5));
+    root.add(this.add.text(0, 90, isRookie ? '木剑见习者' : isHunter ? '老练的猎人' : '王国讨伐队', { fontFamily: 'sans-serif', fontSize: '11px', fontStyle: 'bold', color: '#f0d7c0', stroke: '#25151d', strokeThickness: 4 }).setOrigin(0.5));
     return { root, figures, baseX: x, baseY: y };
   }
 
   makeAdventurerFigure(x, y, role, scale) {
-    if (role === 'rookie') return this.makeRookieFigure(x, y, scale);
-    const figure = this.add.container(x, y).setScale(scale);
+    const figure = makeAdventurerSprite(this, role, scale);
+    figure.setPosition(x, y);
     figure.baseX = x;
     figure.baseY = y;
-    const art = this.add.graphics();
-    const palettes = {
-      rookie: { cloak: 0x765844, trim: 0xd8b782, hood: 0x4e382f, weapon: 0x8a552f, skin: 0xd7a178 },
-      archer: { cloak: 0x526f69, trim: 0xd7cc7a, hood: 0x263f43, weapon: 0xd9b36e, skin: 0xd8a176 },
-      guard: { cloak: 0x784b43, trim: 0xd8ad84, hood: 0x393b48, weapon: 0xcfd9d2, skin: 0xc98e69 },
-      oracle: { cloak: 0x645477, trim: 0xd1b3e7, hood: 0x312742, weapon: 0xbde7dd, skin: 0xd7a77f },
-    };
-    const palette = palettes[role];
-    if (role === 'rookie') {
-      paintPolygon(art, [[20, -42], [27, -47], [37, 16], [32, 27], [26, 18]], 0x9a6034, 1, 0x3e281d, 2);
-      paintPolygon(art, [[20, -22], [36, -25], [39, -20], [23, -16]], 0x6c4128, 1, 0x35231c, 1);
-      paintPolygon(art, [[-28, -10], [-42, 1], [-39, 22], [-25, 33], [-12, 21], [-14, 0]], 0x604735, 1, 0x241c1a, 2);
-      paintPolygon(art, [[-32, -2], [-24, -7], [-17, 2], [-20, 18], [-30, 23], [-36, 15]], 0x987353, 0.86, 0xd2ae77, 1);
-    } else if (role === 'archer') {
-      paintPolygon(art, [[-27, -23], [-39, -19], [-36, 14], [-25, 17]], 0x47372d, 1, 0x1b2024, 1);
-      art.lineStyle(3, palette.weapon, 0.95);
-      art.beginPath(); art.moveTo(22, -40); art.lineTo(34, -9); art.lineTo(22, 24); art.strokePath();
-      art.lineStyle(1, 0xf4e4b5, 0.82).strokeLineShape(new Phaser.Geom.Line(22, -40, 22, 24));
-      paintPolygon(art, [[-33, -26], [-24, -30], [-16, -5], [-28, -1]], 0x72574a, 1, 0x251f20, 1);
-    } else if (role === 'guard') {
-      art.lineStyle(4, palette.weapon, 0.94).strokeLineShape(new Phaser.Geom.Line(31, -44, 38, 24));
-      paintPolygon(art, [[-31, -17], [-52, -5], [-49, 26], [-31, 38], [-13, 26], [-14, -6]], 0x3a5967, 1, 0xc6d6d0, 2);
-      paintPolygon(art, [[-37, -8], [-27, -12], [-20, 2], [-25, 19], [-39, 13]], 0x63838b, 0.82);
-    } else if (role === 'oracle') {
-      art.lineStyle(4, palette.weapon, 0.94).strokeLineShape(new Phaser.Geom.Line(31, -48, 31, 27));
-      paintPolygon(art, [[31, -60], [40, -49], [31, -38], [22, -49]], 0xb9e7df, 1, 0x536e72, 1);
-      paintPolygon(art, [[-34, 6], [-21, -3], [-12, 14], [-28, 23]], 0x8c6fa8, 0.88, 0x382947, 1);
-    }
-    paintPolygon(art, [[-15, 39], [-10, 10], [-1, 9], [-1, 41]], 0x202832, 1, 0x0b1117, 1);
-    paintPolygon(art, [[4, 41], [5, 9], [14, 10], [20, 38]], 0x202832, 1, 0x0b1117, 1);
-    paintPolygon(art, [[-25, 27], [-21, -7], [-10, -25], [12, -26], [26, -4], [23, 29], [3, 40], [-18, 35]], palette.cloak, 1, 0x1d222c, 2);
-    paintPolygon(art, [[-16, 9], [-12, -17], [11, -18], [18, 10], [8, 23], [-8, 21]], palette.trim, 0.82, 0x2b2631, 1);
-    paintPolygon(art, [[-10, -34], [-7, -46], [8, -47], [14, -36], [8, -25], [-7, -25]], palette.skin, 1, 0x593d39, 1);
-    paintPolygon(art, [[-17, -35], [-10, -55], [9, -56], [19, -35], [10, -23], [-10, -23]], palette.hood, 1, 0x191d27, 2);
-    paintPolygon(art, [[-6, -34], [0, -37], [7, -34], [5, -29], [-5, -29]], 0xf6e8cf, 0.82);
-    if (role === 'rookie') {
-      paintPolygon(art, [[-20, -12], [-31, 1], [-21, 10], [-10, 1]], palette.trim, 0.9, 0x2b2630, 1);
-      paintPolygon(art, [[-6, 0], [1, -6], [8, 0], [1, 7]], 0xf1d38a, 0.88);
-    } else if (role === 'guard') {
-      paintPolygon(art, [[-16, -41], [-5, -52], [7, -51], [17, -40], [9, -31], [-9, -31]], 0x858f99, 1, 0x252b34, 2);
-      paintPolygon(art, [[-7, -43], [0, -48], [8, -43], [5, -37], [-5, -37]], 0xc9d5d0, 0.82);
-      paintPolygon(art, [[-20, -10], [-31, 1], [-21, 10], [-10, 1]], palette.trim, 0.9, 0x2b2630, 1);
-    } else if (role === 'oracle') {
-      paintPolygon(art, [[-23, -16], [-31, 0], [-20, 12], [-9, -1]], palette.trim, 0.92, 0x2b2630, 1);
-      paintPolygon(art, [[-4, 1], [1, -5], [6, 1], [1, 7]], 0xf1dcff, 0.9);
-    } else {
-      paintPolygon(art, [[-6, 0], [1, -6], [8, 0], [1, 7]], 0xf2dc8e, 0.88);
-    }
-    figure.add(art);
     return figure;
   }
-
-  makeRookieFigure(x, y, scale) {
-    const figure = this.add.container(x, y).setScale(scale);
-    figure.baseX = x;
-    figure.baseY = y;
-    const art = this.add.graphics();
-    const ink = 0x211b1b;
-
-    // Cape and equipment sit behind the body so the silhouette reads clearly.
-    paintPolygon(art, [[-24, -24], [-39, -4], [-37, 35], [-18, 48], [2, 35], [0, -19]], 0x49372f, 1, ink, 3);
-    paintPolygon(art, [[25, -45], [33, -49], [45, 16], [39, 29], [32, 18]], 0x9d6234, 1, ink, 3);
-    paintPolygon(art, [[24, -23], [42, -27], [45, -20], [27, -15]], 0x704329, 1, ink, 2);
-
-    paintPolygon(art, [[-18, 24], [-13, 8], [-2, 10], [-3, 48], [-18, 50], [-24, 43]], 0x2f3440, 1, ink, 2);
-    paintPolygon(art, [[4, 10], [15, 9], [23, 42], [16, 50], [2, 48]], 0x343947, 1, ink, 2);
-    paintPolygon(art, [[-23, 42], [-4, 42], [-3, 51], [-19, 54], [-27, 50]], 0x211f24, 1, ink, 2);
-    paintPolygon(art, [[3, 42], [23, 40], [28, 48], [18, 54], [2, 51]], 0x211f24, 1, ink, 2);
-
-    paintPolygon(art, [[-24, 19], [-22, -13], [-11, -30], [12, -30], [26, -10], [23, 23], [10, 35], [-10, 34]], 0x7a5942, 1, ink, 3);
-    paintPolygon(art, [[-14, -17], [11, -19], [18, 13], [8, 26], [-9, 25], [-17, 10]], 0xc49a67, 0.92, 0x5a4032, 2);
-    paintPolygon(art, [[-23, 4], [-38, 13], [-34, 29], [-21, 25], [-12, 10]], 0xa87951, 1, ink, 2);
-    paintPolygon(art, [[21, -7], [34, 3], [34, 18], [23, 23], [14, 9]], 0xad7b50, 1, ink, 2);
-    paintPolygon(art, [[-24, 13], [22, 12], [22, 21], [-22, 23]], 0x4d3328, 1, ink, 2);
-    paintPolygon(art, [[-3, 12], [7, 12], [8, 22], [-3, 23]], 0xd6b06c, 1, 0x5f432d, 1);
-
-    paintPolygon(art, [[-42, 5], [-55, 15], [-52, 36], [-38, 47], [-24, 34], [-25, 13]], 0x5d4939, 1, ink, 3);
-    paintPolygon(art, [[-46, 13], [-37, 8], [-29, 17], [-31, 34], [-42, 39], [-50, 31]], 0x9b794f, 1, 0xd2aa6b, 2);
-    paintPolygon(art, [[-40, 19], [-34, 14], [-29, 20], [-31, 29], [-39, 33], [-45, 28]], 0x6e533c, 1);
-
-    paintPolygon(art, [[-16, -43], [-10, -54], [6, -57], [19, -48], [21, -34], [13, -24], [-6, -23], [-18, -31]], 0xd3a079, 1, ink, 3);
-    paintPolygon(art, [[-20, -43], [-13, -58], [-2, -64], [7, -59], [15, -63], [23, -49], [18, -39], [10, -47], [5, -39], [-3, -48], [-10, -38]], 0x50372f, 1, ink, 2);
-    paintPolygon(art, [[-10, -35], [-5, -38], [-1, -35], [-4, -32], [-9, -32]], 0x2d2424, 1);
-    paintPolygon(art, [[7, -35], [12, -38], [16, -34], [12, -31], [8, -31]], 0x2d2424, 1);
-    art.lineStyle(2, 0x70483b, 0.9).strokeLineShape(new Phaser.Geom.Line(-2, -26, 8, -25));
-    figure.add(art);
-    return figure;
-  }
-
   updateBattleUi() {
     if (!this.battleState) return;
     const state = this.battleState;
-    const fillWidth = 246;
-    state.cards.slime.barFill.width = fillWidth * (state.slimeHp / 100);
-    state.cards.enemy.barFill.width = fillWidth * (state.enemyHp / 100);
+    state.cards.slime.barFill.displayWidth = state.cards.slime.maxWidth * (state.slimeHp / 100);
+    state.cards.enemy.barFill.displayWidth = state.cards.enemy.maxWidth * (state.enemyHp / 100);
     state.cards.slime.hpText.setText(Math.max(0, Math.ceil(state.slimeHp)) + ' / 100');
     state.cards.enemy.hpText.setText(Math.max(0, Math.ceil(state.enemyHp)) + ' / 100');
   }
@@ -820,8 +758,9 @@ class SlimeDungeonScene extends Phaser.Scene {
   runBattleRace(racerKey, complete) {
     const state = this.battleState;
     const active = state.racers[racerKey];
-    state.actionText.setText('行动：' + active.label + ' 率先抵达行动点');
+    state.actionText.setText(active.label + ' 行动');
     Object.values(state.racers).forEach((racer, index) => {
+      racer.frame.setVisible(racer === active);
       const remaining = 1 - racer.progress;
       racer.nextProgress = racer === active
         ? 1
@@ -831,6 +770,7 @@ class SlimeDungeonScene extends Phaser.Scene {
         x: racer.startX + racer.width * racer.nextProgress,
         scaleX: racer === active ? 1.22 : 1,
         scaleY: racer === active ? 1.22 : 1,
+        y: racer === active ? 8 : 12,
         duration: this.battleDuration(560),
         ease: 'Sine.inOut',
       });
@@ -848,6 +788,8 @@ class SlimeDungeonScene extends Phaser.Scene {
     racer.progress = 0.055;
     racer.token.x = racer.startX + racer.width * racer.progress;
     racer.token.setScale(1);
+    racer.token.y = 12;
+    racer.frame.setVisible(false);
   }
 
   performBattleStrike(turn, complete) {
@@ -858,15 +800,80 @@ class SlimeDungeonScene extends Phaser.Scene {
     const defender = state.actors[defenderKey];
     const direction = turn.actor === 'slime' ? 1 : -1;
     const attackerVisual = turn.actor === 'enemy' ? attacker.figures[turn.racer] : attacker.root;
-    this.tweens.add({
-      targets: attackerVisual,
-      x: attackerVisual.baseX + direction * 42,
-      y: attackerVisual.baseY - 8,
-      duration: this.battleDuration(150),
-      yoyo: true,
-      ease: 'Cubic.out',
+    if (turn.actor === 'slime') {
+      this.tweens.add({
+        targets: attacker.art,
+        scaleX: attacker.artBaseScale.x * 1.18,
+        scaleY: attacker.artBaseScale.y * 0.76,
+        duration: this.battleDuration(75),
+        yoyo: true,
+        ease: 'Sine.inOut',
+      });
+      this.tweens.add({
+        targets: attacker.root,
+        x: attacker.baseX + direction * 44,
+        y: attacker.baseY - 10,
+        duration: this.battleDuration(155),
+        yoyo: true,
+        ease: 'Cubic.out',
+      });
+    } else {
+      const weaponPivot = attackerVisual.weaponPivot;
+      weaponPivot.setAngle(0).setY(-20);
+      this.tweens.add({
+        targets: attackerVisual,
+        x: attackerVisual.baseX - direction * 8,
+        y: attackerVisual.baseY + 3,
+        duration: this.battleDuration(105),
+        ease: 'Sine.out',
+      });
+      this.tweens.add({
+        targets: weaponPivot,
+        angle: -direction * 46,
+        y: -28,
+        duration: this.battleDuration(105),
+        ease: 'Sine.out',
+      });
+      this.time.delayedCall(this.battleDuration(108), () => {
+        if (!this.battle?.active) return;
+        this.tweens.add({
+          targets: attackerVisual,
+          x: attackerVisual.baseX + direction * 16,
+          y: attackerVisual.baseY - 2,
+          duration: this.battleDuration(112),
+          ease: 'Cubic.in',
+          yoyo: true,
+        });
+        this.tweens.add({
+          targets: weaponPivot,
+          angle: direction * 66,
+          y: -4,
+          duration: this.battleDuration(112),
+          ease: 'Cubic.in',
+        });
+        this.time.delayedCall(this.battleDuration(122), () => {
+          if (!this.battle?.active) return;
+          this.tweens.add({ targets: weaponPivot, angle: 0, y: -20, duration: this.battleDuration(90), ease: 'Sine.out' });
+        });
+      });
+    }
+    this.time.delayedCall(this.battleDuration(turn.actor === 'enemy' ? 178 : 92), () => {
+      if (!this.battle?.active) return;
+      const attackFx = PixelEffects.attack(this, turn.actor, direction)
+        .setPosition(attacker.baseX + direction * 38, attacker.baseY - 38)
+        .setDepth(46);
+      this.tweens.add({
+        targets: attackFx,
+        x: attackFx.x + direction * 38,
+        alpha: 0,
+        scaleX: direction * 1.22,
+        scaleY: 1.22,
+        duration: this.battleDuration(190),
+        ease: 'Cubic.out',
+        onComplete: () => attackFx.destroy(),
+      });
     });
-    this.time.delayedCall(this.battleDuration(155), () => {
+    this.time.delayedCall(this.battleDuration(turn.actor === 'enemy' ? 208 : 155), () => {
       if (!this.battle?.active) return;
       if (defenderKey === 'enemy') state.enemyHp = Math.max(0, state.enemyHp - turn.damage);
       else state.slimeHp = Math.max(0, state.slimeHp - turn.damage);
@@ -883,8 +890,8 @@ class SlimeDungeonScene extends Phaser.Scene {
   createBattleImpact(x, y, color, damage) {
     const value = this.add.text(x, y - 34, '-' + damage, { fontFamily: 'sans-serif', fontSize: '22px', fontStyle: 'bold', color: '#fff1d5', stroke: '#20131a', strokeThickness: 5 }).setOrigin(0.5).setDepth(46);
     this.tweens.add({ targets: value, y: value.y - 26, alpha: 0, duration: 480, ease: 'Cubic.out', onComplete: () => value.destroy() });
-    for (let i = 0; i < 7; i += 1) {
-      const spark = this.add.polygon(x, y, [0, -5, 4, 0, 0, 5, -4, 0], color, 0.96).setDepth(46);
+    for (let i = 0; i < 5; i += 1) {
+      const spark = PixelEffects.particle(this, color, 4).setPosition(x, y).setAlpha(0.96).setDepth(46);
       this.tweens.add({
         targets: spark,
         x: x + Phaser.Math.Between(-52, 52),
@@ -964,6 +971,7 @@ class SlimeDungeonScene extends Phaser.Scene {
     const tokenY = Phaser.Math.Between(300, 520);
     this.spawnBone('adventurer', tokenX, tokenY, { angle: Phaser.Math.Between(-20, 20) });
     this.wave += 1;
+    this.boneValueBonus += getBattleBoneBonus(this.meta, getBattleRacers(config.wave).length);
     this.nextWaveAt = this.time.now + getWaveConfig(this.wave).duration * 1000;
     this.updateHud();
     this.showToast('讨伐队留下了高价值战利品 · 继续喂养', 1600);
@@ -977,28 +985,41 @@ class SlimeDungeonScene extends Phaser.Scene {
   }
 
   updateHud() {
-    const config = getWaveConfig(this.wave);
-    this.evolutionFill?.setDisplaySize(304 * clamp(this.mass / Math.max(150, config.power), 0, 1), 6);
+    if (this.evolutionFill) this.evolutionFill.displayWidth = this.evolutionMaxWidth * clamp(this.mass / getEvolutionMassCap(this.meta), 0, 1);
   }
 
   showToast(message, duration = 1400) {
     this.toastText?.destroy();
-    this.toastText = this.add.text(580, 620, message, { fontFamily: 'sans-serif', fontSize: '14px', fontStyle: 'bold', color: '#fff1cf', backgroundColor: '#0d1519e8', padding: { left: 20, right: 20, top: 10, bottom: 10 }, stroke: '#5e7863', strokeThickness: 1 }).setOrigin(0.5).setDepth(70);
+    const toast = this.add.container(580, 620).setDepth(70);
+    toast.add(pixelPanel(this, 0, 0, 520, 40, PixelPalette.edge));
+    toast.add(this.add.text(0, 0, message, { fontFamily: 'Microsoft YaHei, sans-serif', fontSize: '14px', fontStyle: 'bold', color: '#fff1cf', shadow: { offsetX: 1, offsetY: 1, color: '#05080c', blur: 0, fill: true } }).setOrigin(0.5));
+    this.toastText = toast;
     this.tweens.add({ targets: this.toastText, alpha: 0, delay: duration, duration: 420, onComplete: () => this.toastText?.destroy() });
+  }
+
+  showFeedFloat(message, color = '#e7f5c5') {
+    this.feedFloatText?.destroy();
+    const text = this.add.text(this.slime.x, this.slime.y - 82, message, {
+      fontFamily: 'Microsoft YaHei, sans-serif', fontSize: '13px', fontStyle: 'bold', color,
+      stroke: '#071015', strokeThickness: 4,
+    }).setOrigin(0.5).setDepth(24);
+    this.feedFloatText = text;
+    this.tweens.add({
+      targets: text, y: text.y - 28, alpha: 0, duration: 980, ease: 'Cubic.out',
+      onComplete: () => { if (this.feedFloatText === text) this.feedFloatText = null; text.destroy(); },
+    });
   }
 
   showResult(config) {
     const earned = soulReward(this.mass, this.wave);
     this.meta.soul += earned; this.saveMeta();
     const overlay = this.add.container(0, 0).setDepth(50);
-    overlay.add(this.add.rectangle(580, 360, WIDTH, HEIGHT, 0x05070b, 0.84));
-    const panel = this.add.graphics();
-    paintPolygon(panel, [[238, 128], [922, 128], [948, 154], [948, 568], [922, 594], [238, 594], [212, 568], [212, 154]], 0x111b25, 0.98, 0xb98558, 2, 0.95);
-    overlay.add(panel);
+    overlay.add(PixelUI.veil(this, WIDTH, HEIGHT, 0.84).setPosition(580, 360));
+    overlay.add(pixelPanel(this, 580, 361, 736, 466, 0xb98558, 0x111b25));
     overlay.add(this.add.text(580, 178, '本 局 结 算', { fontFamily: 'serif', fontSize: '38px', fontStyle: 'bold', color: '#f5efda', letterSpacing: 5 }).setOrigin(0.5));
     overlay.add(this.add.text(580, 226, `止步于第 ${this.wave} 波 · ${config.title}`, { fontFamily: 'sans-serif', fontSize: '14px', color: '#99aab0' }).setOrigin(0.5));
     const stats = [
-      ['进化阶段', this.mass >= 100 ? '成熟体' : this.mass >= 50 ? '凝胶体' : '幼体', 0x9be7a8],
+      ['进化阶段', getSlimeStage(this.meta), 0x9be7a8],
       ['吞噬骨片', formatNumber(this.itemsFed), 0xe7d7af],
       ['抵达波次', `第 ${this.wave} 波`, 0xd9b68b],
       ['本局魂晶', `+${earned} ◆`, 0xf2c867],
@@ -1016,68 +1037,190 @@ class SlimeDungeonScene extends Phaser.Scene {
 
   showUpgradeTree() {
     this.upgradeOverlay?.destroy(true);
+    this.upgradeDetail = null;
     const overlay = this.add.container(0, 0).setDepth(55);
     this.upgradeOverlay = overlay;
-    overlay.add(this.add.rectangle(580, 360, WIDTH, HEIGHT, 0x070b11, 0.97));
-    const frame = this.add.graphics();
-    paintPolygon(frame, [[42, 34], [1118, 34], [1138, 54], [1138, 666], [1118, 686], [42, 686], [22, 666], [22, 54]], 0x101a24, 1, 0x6e7774, 2, 0.85);
-    overlay.add(frame);
-    overlay.add(this.add.text(72, 62, '黏液进化树', { fontFamily: 'serif', fontSize: '30px', fontStyle: 'bold', color: '#f3ead2' }));
-    overlay.add(this.add.text(74, 105, '购买前置节点后，后续能力才会从黑暗中显现。', { fontFamily: 'sans-serif', fontSize: '12px', color: '#81949a' }));
-    overlay.add(this.add.text(1084, 72, `${this.meta.soul} ◆`, { fontFamily: 'sans-serif', fontSize: '20px', fontStyle: 'bold', color: '#f2c867' }).setOrigin(1, 0.5));
+    overlay.add(PixelUI.veil(this, WIDTH, HEIGHT, 0.97).setPosition(580, 360));
+    overlay.add(pixelPanel(this, 580, 360, 1112, 640, 0x6e7774, 0x101a24));
+    overlay.add(PixelUI.treeBackdrop(this, 1096, 624).setPosition(580, 360));
+    overlay.add(this.add.text(580, 72, '进化树', { fontFamily: 'serif', fontSize: '40px', fontStyle: 'bold', color: '#f3ead2', shadow: { offsetX: 2, offsetY: 2, color: '#081015', blur: 0, fill: true } }).setOrigin(0.5));
+    overlay.add(PixelUI.resourceBadge(this, 176).setPosition(982, 72));
+    overlay.add(this.add.text(1110, 72, `${this.meta.soul}`, { fontFamily: 'Microsoft YaHei, sans-serif', fontSize: '24px', fontStyle: 'bold', color: '#f2c867' }).setOrigin(1, 0.5));
 
-    const branchX = { nutrition: 285, production: 580, extraPile: 875 };
-    const levelY = { 1: 245, 2: 390, 3: 535 };
-    const nodes = getVisibleUpgradeNodes(this.meta);
-    const links = this.add.graphics();
-    links.lineStyle(4, 0x50645e, 0.72);
-    nodes.filter((node) => node.level > 1).forEach((node) => {
-      const x = branchX[node.branch];
-      links.strokeLineShape(new Phaser.Geom.Line(x, levelY[node.level] - 54, x, levelY[node.level - 1] + 54));
+    const dragSurface = this.add.zone(580, 360, 1096, 624).setInteractive({ useHandCursor: false });
+    const treeContent = this.add.container(0, 0);
+    const pan = { active: false, startX: 0, startY: 0, originX: 0, originY: 0 };
+    dragSurface.on('pointerdown', (pointer) => {
+      pan.active = true; pan.startX = pointer.x; pan.startY = pointer.y;
+      pan.originX = treeContent.x; pan.originY = treeContent.y;
     });
-    overlay.add(links);
-    nodes.forEach((node) => this.addUpgradeTreeNode(overlay, node, branchX[node.branch], levelY[node.level]));
-    overlay.add(this.makeButton(580, 642, 250, 44, '升级完成 · 重新进入', 0x396d56, () => this.scene.restart()));
+    const moveTree = (pointer) => {
+      if (!pan.active || !pointer.isDown) return;
+      treeContent.x = clamp(pan.originX + pointer.x - pan.startX, -260, 220);
+      treeContent.y = clamp(pan.originY + pointer.y - pan.startY, -220, 110);
+    };
+    const releaseTree = () => { pan.active = false; };
+    this.input.on('pointermove', moveTree);
+    this.input.on('pointerup', releaseTree);
+    overlay.once('destroy', () => {
+      this.input.off('pointermove', moveTree);
+      this.input.off('pointerup', releaseTree);
+    });
+    overlay.add([dragSurface, treeContent]);
+
+    const positions = {
+      nutrition: { x: 290, y: 288 }, production: { x: 530, y: 288 },
+      extraPile: { x: 800, y: 288 }, dye: { x: 1010, y: 288 },
+      evolution: { x: 410, y: 480 }, largeBone: { x: 690, y: 480 },
+      betterBone: { x: 900, y: 480 },
+      bonusProduction: { x: 200, y: 580 }, boneSearch: { x: 500, y: 580 }, fusedPile: { x: 760, y: 580 },
+    };
+    this.addUpgradeTreeLinks(treeContent, positions);
+    Object.entries(positions).forEach(([branch, position]) => this.addUpgradeTreeNode(treeContent, branch, position.x, position.y));
+    overlay.add(this.makeTreeButton(580, 642, '升级完成', () => this.scene.restart()));
   }
 
-  addUpgradeTreeNode(overlay, node, x, y) {
-    const purchased = (this.meta[node.branch] || 0) >= node.level;
-    const affordable = this.meta.soul >= node.cost;
-    const card = this.add.container(x, y);
-    const shape = this.add.graphics();
-    const fill = purchased ? 0x25483d : affordable ? 0x263b3b : 0x202b33;
-    const edge = purchased ? 0x86d49a : affordable ? 0xd1aa61 : 0x536168;
-    paintPolygon(shape, [[-112, -48], [92, -48], [112, -28], [112, 48], [-92, 48], [-112, 28]], fill, 1, edge, 2, 0.94);
-    const hit = this.add.rectangle(0, 0, 224, 96, 0xffffff, 0.001);
-    card.add([shape, hit]);
-    card.add(this.add.text(-91, -31, node.name, { fontFamily: 'sans-serif', fontSize: '15px', fontStyle: 'bold', color: purchased ? '#bff0c8' : '#eee6d2' }));
-    card.add(this.add.text(-91, -4, node.desc, { fontFamily: 'sans-serif', fontSize: '11px', color: '#91a2a3', wordWrap: { width: 180 } }));
-    card.add(this.add.text(91, 29, purchased ? '已掌握' : `${node.cost} ◆`, { fontFamily: 'sans-serif', fontSize: '12px', fontStyle: 'bold', color: purchased ? '#86d49a' : affordable ? '#f2c867' : '#8b9290' }).setOrigin(1, 0.5));
-    if (!purchased) {
-      hit.setInteractive({ useHandCursor: true });
-      hit.on('pointerover', () => shape.setAlpha(0.82));
-      hit.on('pointerout', () => shape.setAlpha(1));
-      hit.on('pointerdown', () => this.buyUpgradeNode(node));
+  addUpgradeTreeLinks(container, positions) {
+    const links = [
+      ['nutrition', 'evolution', 366],
+      ['production', 'evolution', 390],
+      ['extraPile', 'largeBone', 366],
+      ['extraPile', 'betterBone', 390],
+      ['evolution', 'bonusProduction', 538],
+      ['evolution', 'boneSearch', 550],
+      ['evolution', 'fusedPile', 562],
+    ];
+    links.forEach(([fromBranch, toBranch, laneY]) => {
+      const from = positions[fromBranch];
+      const to = positions[toBranch];
+      const start = { x: from.x, y: from.y + 48 };
+      const end = { x: to.x, y: to.y - 48 };
+      const route = [start, { x: start.x, y: laneY }, { x: end.x, y: laneY }, end];
+      container.add(PixelUI.connector(this, route, 0x58766f));
+    });
+  }
+
+  getBranchUpgrade(branch) {
+    const nodes = UPGRADE_NODES.filter((node) => node.branch === branch).sort((a, b) => a.level - b.level);
+    const current = this.meta[branch] || 0;
+    const target = nodes.find((node) => node.level === current + 1) || nodes.at(-1);
+    return { current, max: nodes.at(-1).level, target };
+  }
+
+  getRequirementText(node) {
+    const requirements = node.requires || (node.level === 1 ? {} : { [node.branch]: node.level - 1 });
+    return Object.entries(requirements).map(([branch, level]) => {
+      const prerequisite = UPGRADE_NODES.find((candidate) => candidate.branch === branch && candidate.level === level);
+      return prerequisite?.name || `${branch} ${level}`;
+    }).join(' + ');
+  }
+
+  addUpgradeTreeNode(overlay, branch, x, y) {
+    const upgrade = this.getBranchUpgrade(branch);
+    const { current, max, target } = upgrade;
+    const state = getUpgradeNodeState(target, this.meta);
+    const hidden = !state.known;
+    const full = current >= max;
+    const nodeView = this.add.container(x, y);
+    const visualState = current > 0 ? 'owned'
+      : branch === 'extraPile' && current === 0 ? 'locked'
+        : state.affordable && state.unlocked ? 'ready' : 'locked';
+    const circle = PixelUI.skillNode(this, branch, visualState, hidden)
+      .setInteractive({ useHandCursor: true });
+    circle.on('pointerover', () => circle.setScale(1.06));
+    circle.on('pointerout', () => circle.setScale(1));
+    circle.on('pointerdown', () => this.showUpgradeDetail(branch));
+    nodeView.add(circle);
+    if (current > 0) {
+      const roman = ['I', 'II', 'III', 'IV'][current - 1] || 'IV';
+      const tierBadge = PixelUI.tierBadge(this, roman, visualState).setPosition(-37, -36);
+      const tier = this.add.text(-37, -36, roman, { fontFamily: 'serif', fontSize: '12px', fontStyle: 'bold', color: '#f5efda', stroke: '#14212a', strokeThickness: 2 }).setOrigin(0.5);
+      nodeView.add([tierBadge, tier]);
     }
-    overlay.add(card);
+    overlay.add(nodeView);
+  }
+
+  showUpgradeDetail(branch) {
+    this.upgradeDetail?.destroy(true);
+    const { current, max, target: node } = this.getBranchUpgrade(branch);
+    const state = getUpgradeNodeState(node, this.meta);
+    const hidden = !state.known;
+    const full = current >= max;
+    const detail = this.add.container(0, 0).setDepth(65);
+    this.upgradeDetail = detail;
+    detail.add(PixelUI.veil(this, WIDTH, HEIGHT, 0.52).setPosition(580, 360));
+    detail.add(pixelPanel(this, 580, 360, 474, 292, full ? 0x86d49a : state.unlocked ? 0xd1aa61 : 0x63747a, 0x14212a));
+    const detailState = current > 0 ? 'owned' : state.affordable && state.unlocked ? 'ready' : 'locked';
+    detail.add(PixelUI.skillNode(this, branch, detailState, hidden).setPosition(398, 282));
+    if (!hidden && state.unlocked && !full) {
+      const nextRoman = ['I', 'II', 'III', 'IV'][current] || 'IV';
+      detail.add(PixelUI.tierBadge(this, nextRoman, state.affordable ? 'ready' : 'locked').setPosition(361, 246));
+      detail.add(this.add.text(361, 246, nextRoman, { fontFamily: 'serif', fontSize: '12px', fontStyle: 'bold', color: '#f5efda', stroke: '#14212a', strokeThickness: 2 }).setOrigin(0.5));
+    }
+    detail.add(this.add.text(456, 262, hidden ? '未知节点' : full ? `${node.name} · 已完成` : node.name, { fontFamily: 'serif', fontSize: '25px', fontStyle: 'bold', color: '#f4ead3' }));
+    const description = hidden ? '继续点亮前置能力后，这个节点会显露。' : full ? `该能力已升至 ${current}/${max}。` : node.desc;
+    detail.add(this.add.text(456, 300, description, { fontFamily: 'sans-serif', fontSize: '13px', color: '#aabbbc', wordWrap: { width: 255 } }));
+    const status = full ? '已掌握' : !state.unlocked ? `解锁条件：${this.getRequirementText(node)}` : state.affordable ? `消耗 ${node.cost} ◆` : `魂晶不足 · 还差 ${node.cost - this.meta.soul} ◆`;
+    detail.add(this.add.text(456, 350, `等级进度  ${current}/${max}`, { fontFamily: 'Microsoft YaHei, sans-serif', fontSize: '12px', color: '#8fa8a2' }));
+    detail.add(this.add.text(456, 378, status, { fontFamily: 'sans-serif', fontSize: '14px', fontStyle: 'bold', color: full ? '#a8e8ad' : state.unlocked && state.affordable ? '#f2c867' : '#8b9ca0', wordWrap: { width: 265 } }));
+    if (branch === 'dye' && current > 0) {
+      const colors = [
+        ['blue', '蓝色', 0x55c8ee], ['red', '红色', 0xed6f80], ['green', '绿色', 0x62d29b], ['yellow', '黄色', 0xefd064], ['purple', '紫色', 0xb079dc],
+      ];
+      const currentColor = colors.find(([color]) => color === (this.meta.dyeColor || 'blue')) || colors[0];
+      detail.add(this.add.text(456, 398, `当前：${currentColor[1]}`, { fontFamily: 'sans-serif', fontSize: '11px', color: '#d3e4d2' }));
+      colors.forEach(([color, label, tint], index) => {
+        const chip = pixelPanel(this, 0, 0, 30, 22, color === (this.meta.dyeColor || 'blue') ? 0xf2c867 : 0x53686a, 0x16242b)
+          .setPosition(520 + index * 42, 414).setInteractive({ useHandCursor: true });
+        const swatch = this.add.rectangle(0, 0, 12, 12, tint).setOrigin(0.5);
+        const holder = this.add.container(chip.x, chip.y);
+        holder.add(swatch);
+        detail.add(chip);
+        detail.add(holder);
+        chip.on('pointerdown', () => {
+          this.meta.dyeColor = color;
+          this.saveMeta();
+          this.drawSlime();
+          this.showUpgradeDetail(branch);
+        });
+      });
+    }
+    detail.add(this.makeButton(493, 468, 140, 36, '返回', 0x394c52, () => detail.destroy(true)));
+    if (!full && state.unlocked && state.affordable) {
+      detail.add(this.makeButton(666, 468, 140, 36, '确认升级', 0x396d56, () => this.buyUpgradeNode(node)));
+    }
   }
 
   buyUpgradeNode(node) {
+    const state = getUpgradeNodeState(node, this.meta);
+    if (!state.unlocked) return;
     if (this.meta.soul < node.cost) { this.showToast(`魂晶不足，还需要 ${node.cost - this.meta.soul} 枚`, 1300); return; }
     this.meta.soul -= node.cost;
     this.meta[node.branch] = node.level;
     this.saveMeta();
+    this.upgradeDetail?.destroy(true);
     this.showUpgradeTree();
     this.showToast(`${node.name} 已掌握`, 1100);
   }
 
   makeButton(x, y, w, h, label, color, action) {
     const button = this.add.container(x, y);
-    const bg = this.add.rectangle(0, 0, w, h, color).setStrokeStyle(1, 0xf4d38a, 0.84).setInteractive({ useHandCursor: true });
+    const bg = pixelPanel(this, 0, 0, w, h, 0xf4d38a, color).setInteractive({ useHandCursor: true });
     const text = this.add.text(0, 0, label, { fontFamily: 'sans-serif', fontSize: '15px', fontStyle: 'bold', color: '#fff4dc' }).setOrigin(0.5);
-    bg.on('pointerover', () => bg.setFillStyle(Phaser.Display.Color.IntegerToColor(color).brighten(12).color));
-    bg.on('pointerout', () => bg.setFillStyle(color));
+    bg.on('pointerover', () => bg.setTint(0xfff0cf));
+    bg.on('pointerout', () => bg.clearTint());
     bg.on('pointerdown', action); button.add([bg, text]); return button;
+  }
+
+  makeTreeButton(x, y, label, action) {
+    const button = this.add.container(x, y);
+    const bg = PixelUI.treeButton(this, 280, 52).setInteractive({ useHandCursor: true });
+    const text = this.add.text(0, 0, label, { fontFamily: 'Microsoft YaHei, sans-serif', fontSize: '17px', fontStyle: 'bold', color: '#d8ead7' }).setOrigin(0.5);
+    bg.on('pointerover', () => bg.setTint(0xd0f1d4));
+    bg.on('pointerout', () => bg.clearTint());
+    bg.on('pointerdown', action);
+    button.add([bg, text]);
+    return button;
   }
 }
 
@@ -1087,7 +1230,9 @@ const game = new Phaser.Game({
   height: HEIGHT,
   parent: 'game',
   backgroundColor: '#080b12',
-  render: { antialias: true, roundPixels: true },
+  pixelArt: true,
+  resolution: window.devicePixelRatio || 1,
+  render: { antialias: false, roundPixels: true, pixelArt: true },
   scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
   scene: [SlimeDungeonScene],
 });
