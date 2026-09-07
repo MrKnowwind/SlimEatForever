@@ -36,6 +36,7 @@ class SlimeDungeonScene extends Phaser.Scene {
     this.inBattle = false;
     this.nextBoneAt = this.time.now + getBoneSpawnInterval(this.mass, this.meta);
     this.nextWaveAt = this.time.now + 15000;
+    this.guideStage = 0;
 
     this.drawCave();
     this.createAmbient();
@@ -46,6 +47,7 @@ class SlimeDungeonScene extends Phaser.Scene {
     this.spawnInitialBones();
     this.updateHud();
     this.showToast('骨堆会自动产出骨片 · 把黄色描边骨片拖到史莱姆嘴边', 3400);
+    this.updateEarlyGuide();
   }
 
   loadMeta() {
@@ -138,13 +140,26 @@ class SlimeDungeonScene extends Phaser.Scene {
     hud.add(this.add.text(909, 82, '准备', { fontFamily: 'sans-serif', fontSize: '9px', color: '#71848a', letterSpacing: 1 }).setOrigin(1, 0.5));
     const helpPlate = this.add.graphics().setDepth(18);
     paintPolygon(helpPlate, [[330, 672], [830, 672], [844, 683], [830, 695], [330, 695], [316, 683]], 0x091117, 0.9, 0x34464a, 1, 0.7);
-    this.add.text(580, 683, '骨堆自动凝聚骨片 · 黄色描边道具可以拖给史莱姆', { fontFamily: 'sans-serif', fontSize: '12px', color: '#afbeb2' }).setOrigin(0.5).setDepth(19);
+    this.guideText = this.add.text(580, 683, '', { fontFamily: 'sans-serif', fontSize: '12px', color: '#afbeb2' }).setOrigin(0.5).setDepth(19);
+  }
+
+  updateEarlyGuide(stage = this.guideStage) {
+    this.guideStage = Math.max(this.guideStage, stage);
+    const guides = [
+      '① 等待骨堆凝聚骨片',
+      '② 拖动黄色描边骨片到史莱姆嘴边',
+      '③ 吞噬骨片积累 Mass，准备迎接第一波',
+      '④ 遭遇战开始：观察同一条行动赛道',
+    ];
+    this.guideText?.setText(guides[this.guideStage] || guides.at(-1));
   }
 
   createSlime() {
     this.slime = this.add.container(580, 447).setDepth(11);
     this.slimeShadow = this.add.graphics().setDepth(7);
     paintPolygon(this.slimeShadow, [[-104, 503], [-61, 488], [-12, 482], [48, 486], [104, 502], [58, 515], [-24, 518], [-92, 511]], 0x060c10, 0.62);
+    this.slimeAura = this.add.ellipse(580, 484, 164, 42, 0x6cda8b, 0.07).setDepth(6);
+    this.tweens.add({ targets: this.slimeAura, scaleX: 1.08, scaleY: 0.86, alpha: 0.025, duration: 1500, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
     this.drawSlime();
     this.slimeBob = this.tweens.add({ targets: this.slime, y: 440, duration: 1100, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
     this.time.addEvent({ delay: 2600, loop: true, callback: () => this.playSlimeBlink() });
@@ -342,6 +357,7 @@ class SlimeDungeonScene extends Phaser.Scene {
     if (options.fromPile) {
       bone.setScale(0.3); bone.alpha = 0.2;
       this.tweens.add({ targets: bone, x, y, scale: 1, alpha: 1, angle: options.angle || Phaser.Math.Between(-45, 45), duration: 680, ease: 'Back.out', onComplete: () => { bone.isSettled = true; this.createBoneLanding(bone); this.tweenBoneIdle(bone); } });
+      this.updateEarlyGuide(1);
     }
     this.tweenBoneIdle(bone);
     return bone;
@@ -378,6 +394,7 @@ class SlimeDungeonScene extends Phaser.Scene {
       this.drag = { bone, pointerId: pointer.id, startX: pointer.x, startY: pointer.y, moved: false };
       bone.setDepth(18).setScale(1.16);
       this.setSlimeHungry(true);
+      this.updateEarlyGuide(2);
       this.showToast('把骨头拖到史莱姆的嘴边', 1000);
     });
     this.input.on('pointermove', (pointer) => {
@@ -435,6 +452,7 @@ class SlimeDungeonScene extends Phaser.Scene {
     this.tweens.add({ targets: bone, x: this.slime.x, y: this.slime.y - 4, scale: 0.08, alpha: 0, duration: 360, ease: 'Back.in', onComplete: () => bone.destroy() });
     this.mass += growth; this.coins += growth;
     this.itemsFed += 1;
+    this.updateEarlyGuide(3);
     this.drawSlime();
     this.playSlimeChew();
     this.createFeedBurst(bone.foodData.color);
@@ -500,6 +518,7 @@ class SlimeDungeonScene extends Phaser.Scene {
     this.cancelDrag();
     this.inBattle = true;
     const config = getWaveConfig(this.wave);
+    this.updateEarlyGuide(4);
     this.showToast(config.title + ' 抵达地牢入口', 950);
     this.playEncounterTransition(config);
   }
