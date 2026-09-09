@@ -10,6 +10,8 @@ const BONE_SPAWN_OFFSETS = [
 
 export const FOOD = {
   bone: { name: '骨头', value: 6, color: 0xe8d8af, tag: '基础食物' },
+  salt: { name: '盐结晶', value: 12, color: 0xd9eef0, tag: '盐矿食物' },
+  fish: { name: '鱼肉', value: 30, color: 0xe0a879, tag: '池塘食物' },
   adventurer: { name: '冒险者', value: 90, color: 0xe4ad72, tag: '高价值食物' },
 };
 
@@ -36,7 +38,14 @@ export const UPGRADE_NODES = [
   { id: 'bone-search-1', branch: 'boneSearch', level: 1, name: '寻骨Ⅰ', desc: '每隔 25 秒可以手动翻动一次骨堆', cost: 105, requires: { evolution: 1 } },
   { id: 'bone-search-2', branch: 'boneSearch', level: 2, name: '寻骨Ⅱ', desc: '每隔 20 秒可以手动翻动一次骨堆', cost: 175 },
   { id: 'bone-search-3', branch: 'boneSearch', level: 3, name: '寻骨Ⅲ', desc: '每隔 12 秒可以手动翻动一次骨堆', cost: 280 },
-  { id: 'fused-pile-1', branch: 'fusedPile', level: 1, name: '合成大骨堆Ⅰ', desc: '两处骨堆合为一处，产出时间缩短至原本的 40%', cost: 260, requires: { evolution: 1, extraPile: 1 } },
+  { id: 'fused-pile-1', branch: 'fusedPile', level: 1, name: '合成大骨堆Ⅰ', desc: '两处骨堆合为一处，产出时间缩短至原本的 40%', cost: 260, requires: { evolution: 1, extraPile: 1 }, revealedBy: { evolution: 1 } },
+  { id: 'new-food-1', branch: 'newFood', level: 1, name: '新食物Ⅰ', desc: '解锁盐矿与池塘两种新的食物来源；进化到第二阶段后才能食用', cost: 260, requires: { evolution: 1 }, revealedBy: { evolution: 1 } },
+  { id: 'salt-mine-1', branch: 'saltMine', level: 1, name: '盐矿Ⅰ', desc: '解锁盐矿，快速产生盐结晶', cost: 180, requires: { newFood: 1 }, revealedBy: { newFood: 1 } },
+  { id: 'salt-mine-2', branch: 'saltMine', level: 2, name: '盐矿Ⅱ', desc: '盐矿生产间隔缩短', cost: 260 },
+  { id: 'salt-mine-3', branch: 'saltMine', level: 3, name: '盐矿Ⅲ', desc: '盐矿有 15% 概率额外产生一枚盐结晶', cost: 420 },
+  { id: 'pond-1', branch: 'pond', level: 1, name: '池塘Ⅰ', desc: '解锁池塘，缓慢产生高价值鱼肉', cost: 220, requires: { newFood: 1 }, revealedBy: { newFood: 1 } },
+  { id: 'pond-2', branch: 'pond', level: 2, name: '池塘Ⅱ', desc: '鱼肉价值提升至 36', cost: 320 },
+  { id: 'pond-3', branch: 'pond', level: 3, name: '池塘Ⅲ', desc: '池塘生产间隔缩短', cost: 480 },
 ];
 
 export function formatNumber(value) {
@@ -47,6 +56,7 @@ export function emptyMeta() {
   return {
     soul: 0, nutrition: 0, production: 0, extraPile: 0, largeBone: 0, betterBone: 0,
     dye: 0, dyeColor: 'blue', evolution: 0, bonusProduction: 0, boneSearch: 0, fusedPile: 0,
+    newFood: 0, saltMine: 0, pond: 0,
   };
 }
 
@@ -77,6 +87,22 @@ export function getBoneValue(meta = emptyMeta(), run = {}) {
   return base + largeBonus + (run.boneBonus || 0);
 }
 
+export function getFoodValue(type, meta = emptyMeta()) {
+  if (type === 'fish') return meta.pond >= 2 ? 36 : FOOD.fish.value;
+  if (type === 'salt') return FOOD.salt.value;
+  return FOOD[type]?.value || 0;
+}
+
+export function getFoodSpawnInterval(type, meta = emptyMeta()) {
+  if (type === 'salt') return [Infinity, 3600, 3000, 2600][Math.min(3, meta.saltMine || 0)] || Infinity;
+  if (type === 'fish') return [Infinity, 9800, 9000, 7200][Math.min(3, meta.pond || 0)] || Infinity;
+  return getBoneSpawnInterval(0, meta);
+}
+
+export function getFoodBonusChance(type, meta = emptyMeta()) {
+  return type === 'salt' && (meta.saltMine || 0) >= 3 ? 0.15 : 0;
+}
+
 export function getEvolutionMassCap(meta = emptyMeta()) {
   if ((meta.evolution || 0) >= 2) return 500;
   if ((meta.evolution || 0) >= 1) return 280;
@@ -99,7 +125,8 @@ export function getUpgradeNodeState(node, meta = emptyMeta()) {
   const requirementValues = Object.entries(requirements);
   const purchased = current >= node.level;
   const unlocked = purchased || requirementValues.every(([branch, level]) => (meta[branch] || 0) >= level);
-  const known = purchased || requirementValues.length === 0 || requirementValues.some(([branch, level]) => (meta[branch] || 0) >= level);
+  const revealRequirements = Object.entries(node.revealedBy || requirements);
+  const known = purchased || requirementValues.length === 0 || revealRequirements.some(([branch, level]) => (meta[branch] || 0) >= level);
   return {
     purchased,
     known,
@@ -174,7 +201,8 @@ export function calculateGrowth(value) {
   return Math.max(1, Math.round(value));
 }
 
-export function canConsume(mass, value) {
+export function canConsume(mass, value, meta = emptyMeta(), foodType = 'bone') {
+  if ((foodType === 'salt' || foodType === 'fish') && (meta.evolution || 0) < 2) return false;
   const limit = mass < 35 ? 10 : mass < 100 ? 25 : mass < 190 ? 90 : 300;
   return value <= limit;
 }

@@ -1,22 +1,37 @@
 import * as Phaser from 'phaser';
 import {
   ARENA, FOOD, HEIGHT, WIDTH, UPGRADE_NODES, calculateGrowth, canConsume, chooseBoneSpawnPoint,
-  emptyMeta, formatNumber, getBattleBoneBonus, getBonusProductionChance, getBoneSearchCooldown, getBoneSpawnInterval, getBoneValue, getEvolutionMassCap, getLargeBoneChance, getSlimeStage,
+  emptyMeta, formatNumber, getBattleBoneBonus, getBonusProductionChance, getBoneSearchCooldown, getBoneSpawnInterval, getBoneValue, getEvolutionMassCap, getFoodBonusChance, getFoodSpawnInterval, getFoodValue, getLargeBoneChance, getSlimeStage,
   getBattlePlan, getBattleRacers, getMagnetRadius, getUpgradeNodeState,
   getWaveConfig, soulReward,
 } from './gameLogic.js';
 import {
   DungeonProps, PixelEffects, PixelPalette, PixelUI,
-  createDungeon, makeBattleBackdrop, makeItemSprite, makeAdventurerSprite, pixelPanel,
+  makeBattleBackdrop, makeItemSprite, makeAdventurerSprite, pixelPanel,
 } from './pixelArt.js';
+import { buildVerticalJunction, centerTreeInViewport } from './treeLayout.js';
+import { PIXEL_UI_ASSETS, PixelTheme, resolveSkillVisualState } from './pixelUiAssets.js';
 
 function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
 function distance(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+const TREE_FONT = 'Microsoft YaHei, PingFang SC, sans-serif';
 
 class SlimeDungeonScene extends Phaser.Scene {
   constructor() { super('slime-dungeon'); }
 
+  preload() {
+    PIXEL_UI_ASSETS.forEach(({ key, url, frameWidth, frameHeight }) => {
+      if (frameWidth && frameHeight) this.load.spritesheet(key, url, { frameWidth, frameHeight });
+      else this.load.image(key, url);
+    });
+  }
+
   create() {
+    const artFilter = PixelTheme.assetFilter === 'linear'
+      ? Phaser.Textures.FilterMode.LINEAR
+      : Phaser.Textures.FilterMode.NEAREST;
+    PIXEL_UI_ASSETS.forEach(({ key }) => this.textures.get(key).setFilter?.(artFilter));
+    this.createSlimeAnimations();
     this.meta = this.loadMeta();
     this.mass = 0;
     this.coins = 0;
@@ -25,6 +40,7 @@ class SlimeDungeonScene extends Phaser.Scene {
     this.wave = 1;
     this.bones = [];
     this.bonePiles = [];
+    this.foodPiles = [];
     this.drag = null;
     this.isEnded = false;
     this.inBattle = false;
@@ -37,6 +53,7 @@ class SlimeDungeonScene extends Phaser.Scene {
     this.createHud();
     this.createSlime();
     this.createBonePiles();
+    this.createFoodPiles();
     this.createInput();
     this.spawnInitialBones();
     this.updateHud();
@@ -50,7 +67,10 @@ class SlimeDungeonScene extends Phaser.Scene {
 
   saveMeta() { localStorage.setItem('slime-dungeon-meta', JSON.stringify(this.meta)); }
 
-  drawCave() { this.dungeonArt = createDungeon(this, WIDTH, HEIGHT); }
+  drawCave() {
+    this.dungeonArt = this.add.image(WIDTH / 2, HEIGHT / 2, 'scene-dungeon-background')
+      .setDisplaySize(WIDTH, HEIGHT);
+  }
 
   createAmbient() {
     this.motes = [];
@@ -101,12 +121,61 @@ class SlimeDungeonScene extends Phaser.Scene {
     this.slimeMouth = portrait.mouth;
     // Keep the authored pixel-sprite scale when idle animation updates the
     // body. The old value silently reset the sprite to 1x after each redraw.
-    this.slimeBaseScale = { x: scale * 3, y: scale * 3 };
+    this.slimeSprite = portrait.sprite;
+    this.slimeForm = portrait.form;
+    this.slimeBaseScale = { x: portrait.root.scaleX, y: portrait.root.scaleY };
     this.slimeRadius = (isMicroSlime ? 30 : 52) * growthScale;
     this.startSlimeIdle();
   }
 
+  createSlimeAnimations() {
+    const definitions = [
+      ['slime-micro-idle', 'slime-micro-v2', 0, 3, 7, -1],
+      ['slime-micro-attack', 'slime-micro-v2', 4, 7, 11, 0],
+      ['slime-micro-hurt', 'slime-micro-v2', 8, 11, 11, 0],
+      ['slime-micro-victory', 'slime-micro-v2', 12, 15, 9, 0],
+      ['slime-micro-defeat', 'slime-micro-v2', 16, 19, 7, 0],
+      ['slime-evolved-idle', 'slime-evolved-v2', 0, 3, 7, -1],
+      ['slime-evolved-idle-curious', 'slime-evolved-v2', 4, 7, 7, 0],
+      ['slime-evolved-idle-bouncy', 'slime-evolved-v2', 8, 11, 8, 0],
+      ['slime-evolved-attack', 'slime-evolved-v2', 12, 15, 11, 0],
+      ['slime-evolved-hurt', 'slime-evolved-v2', 16, 19, 11, 0],
+      ['slime-evolved-victory', 'slime-evolved-v2', 20, 23, 9, 0],
+      ['slime-evolved-defeat', 'slime-evolved-v2', 24, 27, 7, 0],
+      ['enemy-rookie-idle', 'enemy-rookie-v1', 0, 3, 7, -1],
+      ['enemy-rookie-attack', 'enemy-rookie-v1', 4, 7, 10, 0],
+      ['enemy-rookie-hurt', 'enemy-rookie-v1', 8, 11, 10, 0],
+      ['enemy-rookie-defeat', 'enemy-rookie-v1', 12, 15, 7, 0],
+      ['enemy-hunter-idle', 'enemy-hunter-v1', 0, 3, 7, -1],
+      ['enemy-hunter-attack', 'enemy-hunter-v1', 4, 7, 10, 0],
+      ['enemy-hunter-hurt', 'enemy-hunter-v1', 8, 11, 10, 0],
+      ['enemy-hunter-defeat', 'enemy-hunter-v1', 12, 15, 7, 0],
+    ];
+    definitions.forEach(([key, texture, start, end, frameRate, repeat]) => {
+      if (this.anims.exists(key)) return;
+      this.anims.create({
+        key,
+        frames: this.anims.generateFrameNumbers(texture, { start, end }),
+        frameRate,
+        repeat,
+      });
+    });
+  }
+
+  makeAuthoredSlimeArt(textureKey, form, scale, baseSize) {
+    const root = this.add.container(0, 0).setScale(scale);
+    const sprite = this.add.sprite(0, 0, textureKey, 0).setOrigin(0.5, 1).setDisplaySize(baseSize, baseSize);
+    const tints = { blue: 0xffffff, red: 0xff8794, green: 0x85efb1, yellow: 0xffdc73, purple: 0xc38cff };
+    sprite.setTint(tints[this.meta?.dyeColor] || 0xffffff);
+    sprite.play(`slime-${form}-idle`);
+    root.add(sprite);
+    return { root, sprite, form, eyes: null, glints: null, mouth: null };
+  }
+
   makeSlimeArtTemplate(scale = 1) {
+    return this.makeAuthoredSlimeArt('slime-evolved-v2', 'evolved', scale, 136);
+
+    /* Legacy procedural slime retained temporarily below during asset migration. */
     const pixelTexture = (key, width, height, draw) => {
       if (!this.textures.exists(key)) {
         const canvas = this.textures.createCanvas(key, width, height).getSourceImage();
@@ -197,16 +266,20 @@ class SlimeDungeonScene extends Phaser.Scene {
   }
 
   makeMicroSlimeArt(scale = 1) {
-    const key = 'slime-micro-stage-v2';
+    return this.makeAuthoredSlimeArt('slime-micro-v2', 'micro', scale, 128);
+
+    /* Legacy procedural micro slime retained temporarily below during asset migration. */
+    const key = 'slime-micro-stage-v12';
     if (!this.textures.exists(key)) {
-      const canvas = this.textures.createCanvas(key, 56, 34).getSourceImage();
+      const canvas = this.textures.createCanvas(key, 56, 48).getSourceImage();
       const ctx = canvas.getContext('2d');
       ctx.imageSmoothingEnabled = false;
       const unit = 2;
       const rows = [
-        [10, 8], [8, 12], [6, 16], [4, 20], [3, 22], [2, 24],
-        [1, 26], [1, 26], [0, 28], [0, 28], [0, 28], [0, 28],
-        [1, 26], [2, 24], [3, 22], [5, 18],
+        [0, 0], [0, 0], [0, 0], [9, 10], [8, 12], [6, 16], [5, 18],
+        [4, 20], [3, 22], [2, 24], [2, 24], [1, 26], [1, 26],
+        [0, 28], [0, 28], [0, 28], [0, 28], [0, 28], [0, 28],
+        [0, 28], [1, 26], [2, 24], [4, 20],
       ];
       const cells = new Set();
       rows.forEach(([left, width], y) => {
@@ -223,11 +296,16 @@ class SlimeDungeonScene extends Phaser.Scene {
         const edge = !has(x - 1, y) || !has(x + 1, y) || !has(x, y - 1) || !has(x, y + 1);
         let color = palette.base;
         if (edge) color = palette.outline;
-        else if (y >= 12 || (x >= 21 && y >= 8)) color = palette.shadow;
-        else if (x <= 9 && y <= 6) color = palette.light;
+        else {
+          const lowerShadow = ((x - 14) ** 2) / 170 + ((y - 22) ** 2) / 20 <= 1;
+          const rightShadow = ((x - 25) ** 2) / 24 + ((y - 16) ** 2) / 42 <= 1;
+          const lightCurve = ((x - 8) ** 2) / 30 + ((y - 7) ** 2) / 16;
+          if (lowerShadow || rightShadow) color = palette.shadow;
+          else if (lightCurve <= 1) color = palette.light;
+        }
         paint(x, y, color);
       });
-      [[8, 3], [9, 3], [7, 4], [8, 4], [6, 5]].forEach(([x, y]) => {
+      [[8, 5], [9, 5], [7, 6], [8, 6]].forEach(([x, y]) => {
         if (has(x, y)) paint(x, y, palette.highlight);
       });
       this.textures.get(key).refresh();
@@ -241,15 +319,8 @@ class SlimeDungeonScene extends Phaser.Scene {
   startSlimeIdle() {
     if (!this.slimeArt?.active) return;
     this.tweens.killTweensOf(this.slimeArt);
-    this.tweens.add({
-      targets: this.slimeArt,
-      scaleX: this.slimeBaseScale.x * 1.024,
-      scaleY: this.slimeBaseScale.y * 0.975,
-      duration: 1280,
-      yoyo: true,
-      repeat: -1,
-      ease: 'Sine.inOut',
-    });
+    this.slimeArt.setScale(this.slimeBaseScale.x, this.slimeBaseScale.y).setAngle(0);
+    this.slimeSprite?.play(`slime-${this.slimeForm}-idle`, true);
   }
 
   playSlimeBlink() {
@@ -259,8 +330,13 @@ class SlimeDungeonScene extends Phaser.Scene {
   }
 
   playSlimeWiggle() {
-    if (this.isEnded || this.inBattle || !this.slimeArt?.active) return;
-    this.tweens.add({ targets: this.slimeArt, angle: 2.4, duration: 130, yoyo: true, repeat: 1, ease: 'Sine.inOut' });
+    if (this.isEnded || this.inBattle || this.slimeForm !== 'evolved' || !this.slimeSprite?.active) return;
+    if (this.slimeSprite.anims.currentAnim?.key !== 'slime-evolved-idle') return;
+    const key = Phaser.Math.RND.pick(['slime-evolved-idle-curious', 'slime-evolved-idle-bouncy']);
+    this.slimeSprite.play(key, true);
+    this.slimeSprite.once('animationcomplete', (animation) => {
+      if (animation.key === key && this.slimeSprite?.active) this.slimeSprite.play('slime-evolved-idle', true);
+    });
   }
 
   setSlimeHungry(active) {
@@ -272,12 +348,13 @@ class SlimeDungeonScene extends Phaser.Scene {
 
   playSlimeChew() {
     if (!this.slimeArt?.active) return;
+    this.slimeSprite?.play(`slime-${this.slimeForm}-attack`, true);
     this.tweens.killTweensOf(this.slimeArt);
     this.tweens.add({
       targets: this.slimeArt,
       scaleX: this.slimeBaseScale.x * 1.14,
       scaleY: this.slimeBaseScale.y * 0.74,
-      duration: 105,
+      duration: 180,
       yoyo: true,
       ease: 'Back.out',
       onComplete: () => this.startSlimeIdle(),
@@ -297,12 +374,23 @@ class SlimeDungeonScene extends Phaser.Scene {
     this.nextPileIndex = 0;
   }
 
-  createBonePile(x, y, direction, scale = 1) {
+  createFoodPiles() {
+    if ((this.meta.evolution || 0) < 2 || !(this.meta.newFood || 0)) return;
+    if (this.meta.saltMine) this.foodPiles.push(this.createBonePile(170, 286, 1, 0.82, 'salt'));
+    if (this.meta.pond) this.foodPiles.push(this.createBonePile(990, 286, -1, 0.82, 'fish'));
+    this.foodPiles.forEach((pile, index) => {
+      pile.nextAt = this.time.now + getFoodSpawnInterval(pile.foodType, this.meta) + index * 1100;
+    });
+  }
+
+  createBonePile(x, y, direction, scale = 1, foodType = 'bone') {
     const root = this.add.container(x, y).setDepth(8);
-    const prop = DungeonProps.bonePile(this, direction);
-    root.setScale(scale).setSize(152, 88).setInteractive({ useHandCursor: true });
+    const prop = foodType === 'bone'
+      ? DungeonProps.bonePile(this, direction)
+      : DungeonProps.productionSource(this, foodType, direction);
+    root.setScale(scale).setSize(152, foodType === 'bone' ? 88 : 96).setInteractive({ useHandCursor: true });
     root.add(prop.root);
-    const pile = { root, artGroup: prop.artGroup, x, y, direction, scale, radius: 116 * scale, nextSearchAt: 0 };
+    const pile = { root, artGroup: prop.artGroup, x, y, direction, scale, radius: 116 * scale, nextSearchAt: 0, foodType };
     root.on('pointerdown', () => this.manualSearchPile(pile));
     return pile;
   }
@@ -322,7 +410,7 @@ class SlimeDungeonScene extends Phaser.Scene {
 
   getBoneDropPoint(sourcePile = this.bonePiles[0]) {
     const blockers = [
-      ...this.bonePiles.map((pile) => ({ x: pile.x, y: pile.y, radius: pile.radius || 116 })),
+      ...[...this.bonePiles, ...this.foodPiles].map((pile) => ({ x: pile.x, y: pile.y, radius: pile.radius || 116 })),
       { x: this.slime.x, y: this.slime.y, radius: this.slimeRadius + 52 },
       ...this.bones.filter((bone) => bone.active && !bone.consumed).map((bone) => ({
         x: bone.homeX,
@@ -341,7 +429,7 @@ class SlimeDungeonScene extends Phaser.Scene {
     bone.isLarge = type === 'bone' && Math.random() < getLargeBoneChance(this.meta);
     bone.foodData = type === 'bone'
       ? { ...FOOD.bone, name: bone.isLarge ? '大骨片' : FOOD.bone.name, value: getBoneValue(this.meta, { large: bone.isLarge, boneBonus: this.boneValueBonus }) }
-      : FOOD[type];
+      : { ...FOOD[type], value: getFoodValue(type, this.meta) };
     bone.homeX = x; bone.homeY = y; bone.isSettled = !options.fromPile; bone.consumed = false; bone.wasMoved = false;
     bone.add(this.makeBoneArt(type, type === 'bone' ? bone.isLarge ? 0.9 : 0.66 : 0.92));
     bone.setAngle(options.angle || Phaser.Math.Between(-45, 45));
@@ -395,7 +483,7 @@ class SlimeDungeonScene extends Phaser.Scene {
       if (Math.hypot(pointer.x - this.drag.startX, pointer.y - this.drag.startY) > 9) this.drag.moved = true;
       bone.x = clamp(pointer.x, ARENA.left + 38, ARENA.right - 38);
       bone.y = clamp(pointer.y, ARENA.top + 32, ARENA.bottom - 52);
-      if (distance(bone, this.slime) <= getMagnetRadius(this.meta) && canConsume(this.mass, bone.foodData.value)) {
+      if (distance(bone, this.slime) <= getMagnetRadius(this.meta) && canConsume(this.mass, bone.foodData.value, this.meta, bone.foodType)) {
         this.feedBone(bone);
         if (bone.consumed) {
           this.drag = null;
@@ -448,7 +536,7 @@ class SlimeDungeonScene extends Phaser.Scene {
         boneBonus: this.boneValueBonus,
       });
     }
-    if (!canConsume(this.mass, bone.foodData.value)) { this.returnBone(bone); return; }
+    if (!canConsume(this.mass, bone.foodData.value, this.meta, bone.foodType)) { this.returnBone(bone); return; }
     const massCap = getEvolutionMassCap(this.meta);
     if (this.mass >= massCap) {
       this.returnBone(bone);
@@ -500,7 +588,15 @@ class SlimeDungeonScene extends Phaser.Scene {
   spawnPileBone(sourcePile) {
     const point = this.getBoneDropPoint(sourcePile);
     if (!point) return false;
-    this.spawnBone('bone', point.x, point.y, { fromPile: true, sourcePile });
+    this.spawnBone(sourcePile.foodType || 'bone', point.x, point.y, { fromPile: true, sourcePile });
+    this.pileBurst(sourcePile);
+    return true;
+  }
+
+  spawnFoodPileItem(sourcePile) {
+    const point = this.getBoneDropPoint(sourcePile);
+    if (!point) return false;
+    this.spawnBone(sourcePile.foodType, point.x, point.y, { fromPile: true, sourcePile });
     this.pileBurst(sourcePile);
     return true;
   }
@@ -534,6 +630,17 @@ class SlimeDungeonScene extends Phaser.Scene {
       }
       this.nextBoneAt = time + getBoneSpawnInterval(this.mass, this.meta);
     }
+    if (!this.inBattle && this.bones.length < 9) {
+      this.foodPiles.forEach((pile) => {
+        if (time < pile.nextAt) return;
+        if (this.spawnFoodPileItem(pile)) {
+          if (this.bones.length < 9 && Math.random() < getFoodBonusChance(pile.foodType, this.meta)) this.spawnFoodPileItem(pile);
+          pile.nextAt = time + getFoodSpawnInterval(pile.foodType, this.meta);
+        } else {
+          pile.nextAt = time + 500;
+        }
+      });
+    }
     const config = getWaveConfig(this.wave);
     const remaining = Math.max(0, (this.nextWaveAt - time) / 1000);
     this.timerText.setText(this.inBattle ? '袭击中 · 史莱姆自动迎战' : `袭击倒计时  ${remaining.toFixed(1)}s`);
@@ -545,8 +652,17 @@ class SlimeDungeonScene extends Phaser.Scene {
   pileBurst(pile) {
     if (!pile?.artGroup.active) return;
     this.tweens.killTweensOf(pile.artGroup);
-    pile.artGroup.setScale(pile.direction, 1);
-    this.tweens.add({ targets: pile.artGroup, scaleX: pile.direction * 1.04, scaleY: 0.94, duration: 110, yoyo: true, ease: 'Sine.inOut' });
+    const baseX = pile.artGroup.pixelBaseScaleX || 1;
+    const baseY = pile.artGroup.pixelBaseScaleY || 1;
+    pile.artGroup.setScale(pile.direction * baseX, baseY);
+    this.tweens.add({
+      targets: pile.artGroup,
+      scaleX: pile.direction * baseX * 1.04,
+      scaleY: baseY * 0.94,
+      duration: 110,
+      yoyo: true,
+      ease: 'Sine.inOut',
+    });
     this.createPileBurst(pile);
   }
 
@@ -562,16 +678,14 @@ class SlimeDungeonScene extends Phaser.Scene {
   playEncounterTransition(config) {
     const transition = this.add.container(0, 0).setDepth(40);
     const veil = PixelUI.veil(this, WIDTH, HEIGHT, 0).setPosition(580, 360);
-    const leftSlat = PixelEffects.encounterCurtain(this, 'left', WIDTH / 2, HEIGHT).setOrigin(0).setPosition(-WIDTH / 2, 0);
-    const rightSlat = PixelEffects.encounterCurtain(this, 'right', WIDTH / 2, HEIGHT).setOrigin(0).setPosition(WIDTH, 0);
-    const title = this.add.text(580, 301, '遭 遇 ！', { fontFamily: 'serif', fontSize: '64px', fontStyle: 'bold', color: '#fff1c7', stroke: '#27151a', strokeThickness: 12 }).setOrigin(0.5).setAlpha(0);
-    const subtitle = this.add.text(580, 367, config.title + '  ·  来袭战力 ' + formatNumber(config.power), { fontFamily: 'sans-serif', fontSize: '16px', fontStyle: 'bold', color: '#d8e3e1', letterSpacing: 2 }).setOrigin(0.5).setAlpha(0);
-    transition.add([veil, leftSlat, rightSlat, title, subtitle]);
-    this.tweens.add({ targets: veil, alpha: 0.78, duration: 180 });
-    this.tweens.add({ targets: leftSlat, x: 0, duration: 300, ease: 'Cubic.out' });
-    this.tweens.add({ targets: rightSlat, x: WIDTH / 2, duration: 300, ease: 'Cubic.out' });
-    this.tweens.add({ targets: [title, subtitle], alpha: 1, duration: 180, delay: 180 });
-    this.time.delayedCall(620, () => {
+    const crest = PixelEffects.encounterCrest(this).setPosition(580, 278).setScale(0.62).setAlpha(0);
+    const title = this.add.text(580, 402, '遭 遇 ！', { fontFamily: 'serif', fontSize: '58px', fontStyle: 'bold', color: '#fff1c7', stroke: '#27151a', strokeThickness: 10 }).setOrigin(0.5).setAlpha(0);
+    const subtitle = this.add.text(580, 460, config.title + '  ·  来袭战力 ' + formatNumber(config.power), { fontFamily: 'sans-serif', fontSize: '16px', fontStyle: 'bold', color: '#d8e3e1', letterSpacing: 2 }).setOrigin(0.5).setAlpha(0);
+    transition.add([veil, crest, title, subtitle]);
+    this.tweens.add({ targets: veil, alpha: 0.84, duration: 160 });
+    this.tweens.add({ targets: crest, alpha: 1, scale: 1, angle: 4, duration: 260, ease: 'Back.out' });
+    this.tweens.add({ targets: [title, subtitle], alpha: 1, y: '+=6', duration: 180, delay: 170, ease: 'Cubic.out' });
+    this.time.delayedCall(680, () => {
       transition.destroy(true);
       this.createBattleArena(config);
     });
@@ -666,8 +780,8 @@ class SlimeDungeonScene extends Phaser.Scene {
 
     const createRacer = (key, label, color, progress) => {
       const token = this.add.container(startX + width * progress, 12);
-      const icon = PixelUI.timelineIcon(this, key === 'slime' ? 'slime' : 'enemy');
-      const frame = pixelPanel(this, 0, 0, 24, 24, PixelPalette.white, PixelPalette.ink).setVisible(false);
+      const icon = PixelUI.timelineIcon(this, key);
+      const frame = PixelUI.timelineActive(this).setVisible(false);
       token.add([frame, icon]);
       panel.add(token);
       return { key, label, color, token, frame, progress, startX, width };
@@ -696,7 +810,7 @@ class SlimeDungeonScene extends Phaser.Scene {
     const portrait = isMicroSlime ? this.makeMicroSlimeArt(scale * 0.7) : this.makeSlimeArt(scale);
     portrait.root.y = isMicroSlime ? 76 : 30;
     root.add(portrait.root);
-    return { root, art: portrait.root, artBaseScale: { x: portrait.root.scaleX, y: portrait.root.scaleY }, baseX: x, baseY: y };
+    return { root, art: portrait.root, sprite: portrait.sprite, form: portrait.form, artBaseScale: { x: portrait.root.scaleX, y: portrait.root.scaleY }, baseX: x, baseY: y };
   }
 
   createAdventurerParty(x, y, wave) {
@@ -723,7 +837,22 @@ class SlimeDungeonScene extends Phaser.Scene {
   }
 
   makeAdventurerFigure(x, y, role, scale) {
+    if (role === 'rookie' || role === 'hunter') {
+      const figure = this.add.container(x, y).setScale(scale * 0.38);
+      const sprite = this.add.sprite(0, 42, `enemy-${role}-v1`, 0)
+        .setOrigin(0.5, 1)
+        .setDisplaySize(160, 160)
+        .play(`enemy-${role}-idle`);
+      figure.add(sprite);
+      figure.weaponPivot = this.add.container(0, 0);
+      figure.battleSprite = sprite;
+      figure.role = role;
+      figure.baseX = x;
+      figure.baseY = y;
+      return figure;
+    }
     const figure = makeAdventurerSprite(this, role, scale);
+    figure.role = role;
     figure.setPosition(x, y);
     figure.baseX = x;
     figure.baseY = y;
@@ -801,6 +930,7 @@ class SlimeDungeonScene extends Phaser.Scene {
     const direction = turn.actor === 'slime' ? 1 : -1;
     const attackerVisual = turn.actor === 'enemy' ? attacker.figures[turn.racer] : attacker.root;
     if (turn.actor === 'slime') {
+      attacker.sprite?.play(`slime-${attacker.form}-attack`, true);
       this.tweens.add({
         targets: attacker.art,
         scaleX: attacker.artBaseScale.x * 1.18,
@@ -819,6 +949,7 @@ class SlimeDungeonScene extends Phaser.Scene {
       });
     } else {
       const weaponPivot = attackerVisual.weaponPivot;
+      attackerVisual.battleSprite?.play(`enemy-${attackerVisual.role}-attack`, true);
       weaponPivot.setAngle(0).setY(-20);
       this.tweens.add({
         targets: attackerVisual,
@@ -875,12 +1006,26 @@ class SlimeDungeonScene extends Phaser.Scene {
     });
     this.time.delayedCall(this.battleDuration(turn.actor === 'enemy' ? 208 : 155), () => {
       if (!this.battle?.active) return;
-      if (defenderKey === 'enemy') state.enemyHp = Math.max(0, state.enemyHp - turn.damage);
-      else state.slimeHp = Math.max(0, state.slimeHp - turn.damage);
+      if (defenderKey === 'enemy') {
+        state.enemyHp = Math.max(0, state.enemyHp - turn.damage);
+        Object.values(defender.figures).forEach((figure) => {
+          figure.battleSprite?.play(`enemy-${figure.role}-hurt`, true);
+        });
+      }
+      else {
+        state.slimeHp = Math.max(0, state.slimeHp - turn.damage);
+        defender.sprite?.play(`slime-${defender.form}-hurt`, true);
+      }
       this.tweens.add({ targets: defender.root, x: defender.baseX - direction * 13, angle: direction * 3, duration: 72, yoyo: true, repeat: 2, ease: 'Sine.inOut' });
       this.createBattleImpact(defender.baseX - direction * 22, defender.baseY - 22, turn.actor === 'slime' ? 0x9af5a2 : 0xf3b38a, turn.damage);
       this.updateBattleUi();
       this.time.delayedCall(this.battleDuration(460), () => {
+        attacker.sprite?.play(`slime-${attacker.form}-idle`, true);
+        defender.sprite?.play(`slime-${defender.form}-idle`, true);
+        attackerVisual.battleSprite?.play(`enemy-${attackerVisual.role}-idle`, true);
+        Object.values(defender.figures || {}).forEach((figure) => {
+          figure.battleSprite?.play(`enemy-${figure.role}-idle`, true);
+        });
         this.resetBattleRacer(turn.racer);
         complete();
       });
@@ -910,6 +1055,10 @@ class SlimeDungeonScene extends Phaser.Scene {
     if (!state || !this.battle?.active) return;
     state.actionText.setText(slimeWins ? '讨伐队溃散，地牢重新归于饥饿。' : '讨伐队压制住了黏液核心。');
     const loser = state.actors[slimeWins ? 'enemy' : 'slime'];
+    state.actors.slime.sprite?.play(`slime-${state.actors.slime.form}-${slimeWins ? 'victory' : 'defeat'}`, true);
+    if (slimeWins) Object.values(state.actors.enemy.figures).forEach((figure) => {
+      figure.battleSprite?.play(`enemy-${figure.role}-defeat`, true);
+    });
     this.tweens.add({ targets: loser.root, alpha: 0.2, y: loser.baseY + 22, duration: 460, ease: 'Cubic.in' });
     const result = this.add.text(580, 292, slimeWins ? '胜 利' : '败 北', { fontFamily: 'serif', fontSize: '52px', fontStyle: 'bold', color: slimeWins ? '#bff6ae' : '#ffb49c', stroke: '#1b2430', strokeThickness: 10 }).setOrigin(0.5);
     this.battle.add(result);
@@ -934,6 +1083,7 @@ class SlimeDungeonScene extends Phaser.Scene {
 
   playSlimeVictory() {
     if (!this.slimeArt?.active) return;
+    this.slimeSprite?.play(`slime-${this.slimeForm}-victory`, true);
     this.tweens.killTweensOf(this.slimeArt);
     this.tweens.add({
       targets: this.slimeArt,
@@ -953,6 +1103,7 @@ class SlimeDungeonScene extends Phaser.Scene {
 
   playSlimeDefeat() {
     if (!this.slimeArt?.active) return;
+    this.slimeSprite?.play(`slime-${this.slimeForm}-defeat`, true);
     this.tweens.killTweensOf(this.slimeArt);
     this.tweens.add({
       targets: this.slimeArt,
@@ -991,6 +1142,7 @@ class SlimeDungeonScene extends Phaser.Scene {
   showToast(message, duration = 1400) {
     this.toastText?.destroy();
     const toast = this.add.container(580, 620).setDepth(70);
+    this.upgradeTreeCamera?.ignore(toast);
     toast.add(pixelPanel(this, 0, 0, 520, 40, PixelPalette.edge));
     toast.add(this.add.text(0, 0, message, { fontFamily: 'Microsoft YaHei, sans-serif', fontSize: '14px', fontStyle: 'bold', color: '#fff1cf', shadow: { offsetX: 1, offsetY: 1, color: '#05080c', blur: 0, fill: true } }).setOrigin(0.5));
     this.toastText = toast;
@@ -1015,9 +1167,9 @@ class SlimeDungeonScene extends Phaser.Scene {
     this.meta.soul += earned; this.saveMeta();
     const overlay = this.add.container(0, 0).setDepth(50);
     overlay.add(PixelUI.veil(this, WIDTH, HEIGHT, 0.84).setPosition(580, 360));
-    overlay.add(pixelPanel(this, 580, 361, 736, 466, 0xb98558, 0x111b25));
-    overlay.add(this.add.text(580, 178, '本 局 结 算', { fontFamily: 'serif', fontSize: '38px', fontStyle: 'bold', color: '#f5efda', letterSpacing: 5 }).setOrigin(0.5));
-    overlay.add(this.add.text(580, 226, `止步于第 ${this.wave} 波 · ${config.title}`, { fontFamily: 'sans-serif', fontSize: '14px', color: '#99aab0' }).setOrigin(0.5));
+    overlay.add(PixelUI.resultPanel(this, 580, 361, 760, 466));
+    overlay.add(this.add.text(580, 268, '本 局 结 算', { fontFamily: TREE_FONT, fontSize: '30px', fontStyle: 'bold', color: '#f5efda' }).setOrigin(0.5));
+    overlay.add(this.add.text(580, 301, `止步于第 ${this.wave} 波 · ${config.title}`, { fontFamily: TREE_FONT, fontSize: '13px', color: '#99aab0' }).setOrigin(0.5));
     const stats = [
       ['进化阶段', getSlimeStage(this.meta), 0x9be7a8],
       ['吞噬骨片', formatNumber(this.itemsFed), 0xe7d7af],
@@ -1025,13 +1177,13 @@ class SlimeDungeonScene extends Phaser.Scene {
       ['本局魂晶', `+${earned} ◆`, 0xf2c867],
     ];
     stats.forEach(([label, value, color], index) => {
-      const x = 330 + index * 167;
-      overlay.add(this.add.text(x, 316, label, { fontFamily: 'sans-serif', fontSize: '11px', color: '#7f9299' }).setOrigin(0.5));
-      overlay.add(this.add.text(x, 352, value, { fontFamily: 'sans-serif', fontSize: '22px', fontStyle: 'bold', color: `#${color.toString(16).padStart(6, '0')}` }).setOrigin(0.5));
+      const x = 390 + index * 128;
+      overlay.add(this.add.text(x, 342, label, { fontFamily: TREE_FONT, fontSize: '11px', color: '#7f9299' }).setOrigin(0.5));
+      overlay.add(this.add.text(x, 373, value, { fontFamily: TREE_FONT, fontSize: '20px', fontStyle: 'bold', color: `#${color.toString(16).padStart(6, '0')}` }).setOrigin(0.5));
     });
-    overlay.add(this.add.text(580, 424, `持有魂晶  ${this.meta.soul} ◆`, { fontFamily: 'sans-serif', fontSize: '16px', color: '#d5b969' }).setOrigin(0.5));
-    const restart = this.makeButton(445, 520, 230, 48, '直接重新开始', 0x356b55, () => this.scene.restart());
-    const upgrade = this.makeButton(715, 520, 230, 48, '进入升级树', 0x80583f, () => { overlay.destroy(true); this.showUpgradeTree(); });
+    overlay.add(this.add.text(580, 424, `持有魂晶  ${this.meta.soul} ◆`, { fontFamily: TREE_FONT, fontSize: '15px', color: '#d5b969' }).setOrigin(0.5));
+    const restart = this.makeResultButton(455, 525, '直接重新开始', 'confirm', () => this.scene.restart());
+    const upgrade = this.makeResultButton(705, 525, '进入升级树', 'secondary', () => { overlay.destroy(true); this.showUpgradeTree(); });
     overlay.add([restart, upgrade]);
   }
 
@@ -1041,62 +1193,134 @@ class SlimeDungeonScene extends Phaser.Scene {
     const overlay = this.add.container(0, 0).setDepth(55);
     this.upgradeOverlay = overlay;
     overlay.add(PixelUI.veil(this, WIDTH, HEIGHT, 0.97).setPosition(580, 360));
-    overlay.add(pixelPanel(this, 580, 360, 1112, 640, 0x6e7774, 0x101a24));
-    overlay.add(PixelUI.treeBackdrop(this, 1096, 624).setPosition(580, 360));
-    overlay.add(this.add.text(580, 72, '进化树', { fontFamily: 'serif', fontSize: '40px', fontStyle: 'bold', color: '#f3ead2', shadow: { offsetX: 2, offsetY: 2, color: '#081015', blur: 0, fill: true } }).setOrigin(0.5));
-    overlay.add(PixelUI.resourceBadge(this, 176).setPosition(982, 72));
-    overlay.add(this.add.text(1110, 72, `${this.meta.soul}`, { fontFamily: 'Microsoft YaHei, sans-serif', fontSize: '24px', fontStyle: 'bold', color: '#f2c867' }).setOrigin(1, 0.5));
+    overlay.add(PixelUI.treeBackdrop(this, 1112, 640).setPosition(580, 360));
 
-    const dragSurface = this.add.zone(580, 360, 1096, 624).setInteractive({ useHandCursor: false });
-    const treeContent = this.add.container(0, 0);
-    const pan = { active: false, startX: 0, startY: 0, originX: 0, originY: 0 };
-    dragSurface.on('pointerdown', (pointer) => {
-      pan.active = true; pan.startX = pointer.x; pan.startY = pointer.y;
-      pan.originX = treeContent.x; pan.originY = treeContent.y;
-    });
+    const viewport = { x: 104, y: 128, width: 952, height: 440 };
+    // Keep the food branch visible from the start; its upgrade requirement still
+    // controls whether it is available, so evolution remains the gate.
+    const hasNewFoodTree = true;
+    const world = { x: 100, y: 110, width: 1400, height: 1080 };
+    const dragSurface = this.add.zone(
+      viewport.x + viewport.width / 2,
+      viewport.y + viewport.height / 2,
+      viewport.width,
+      viewport.height,
+    ).setInteractive({ useHandCursor: false });
+    // Keep scroll content at the scene root and render it through a dedicated
+    // viewport camera. Camera scissoring reliably clips nested node Containers.
+    const treeContent = this.add.container(0, 0).setDepth(56);
+    let treeCamera = null;
+    // Keep one readable scale. Horizontal position is fixed; only the vertical offset scrolls.
+    const initialScale = hasNewFoodTree ? 0.58 : 0.68;
+    const centeredPosition = centerTreeInViewport(viewport, world, initialScale);
+    const fixedX = centeredPosition.x;
+    const topPosition = viewport.y + 24 - world.y * initialScale;
+    const scaledWorldHeight = world.height * initialScale;
+    const scrollMax = Math.max(0, scaledWorldHeight - viewport.height + 24);
+    const canScroll = scrollMax > 0;
+    const scrollState = { offset: 0 };
+    treeContent.setPosition(fixedX, topPosition).setScale(initialScale);
+    const scrollTrackTop = viewport.y + 22;
+    const scrollTrackHeight = viewport.height - 44;
+    const scrollThumbHeight = Math.min(scrollTrackHeight, Math.max(56, Math.round(scrollTrackHeight * viewport.height / scaledWorldHeight)));
+    const scrollTrack = this.add.rectangle(viewport.x + viewport.width - 20, scrollTrackTop + scrollTrackHeight / 2, 8, scrollTrackHeight, 0x0b1922, 0.8)
+      .setVisible(canScroll);
+    const scrollThumb = this.add.rectangle(viewport.x + viewport.width - 20, scrollTrackTop + scrollThumbHeight / 2, 14, scrollThumbHeight, 0x7eb8a7, 1)
+      .setStrokeStyle(2, 0x132a31, 1).setVisible(canScroll);
+    if (canScroll) scrollThumb.setInteractive({ useHandCursor: true });
+    scrollThumb.on('pointerdown', () => { pan.active = false; });
+    const applyScroll = (offset) => {
+      scrollState.offset = Math.max(0, Math.min(scrollMax, offset));
+      treeContent.setPosition(fixedX, topPosition - scrollState.offset);
+      const thumbRange = Math.max(0, scrollTrackHeight - scrollThumbHeight);
+      scrollThumb.y = scrollTrackTop + scrollThumbHeight / 2 + (scrollMax ? thumbRange * scrollState.offset / scrollMax : 0);
+    };
+    const pan = { active: false, startY: 0, startOffset: 0 };
+    const insideViewport = (pointer) => pointer.x >= viewport.x && pointer.x <= viewport.x + viewport.width
+      && pointer.y >= viewport.y && pointer.y <= viewport.y + viewport.height;
+    const beginTreePointer = (pointer) => {
+      if (!insideViewport(pointer)) return;
+      pan.active = true; pan.startY = pointer.y; pan.startOffset = scrollState.offset;
+    };
     const moveTree = (pointer) => {
       if (!pan.active || !pointer.isDown) return;
-      treeContent.x = clamp(pan.originX + pointer.x - pan.startX, -260, 220);
-      treeContent.y = clamp(pan.originY + pointer.y - pan.startY, -220, 110);
+      applyScroll(pan.startOffset - (pointer.y - pan.startY));
     };
-    const releaseTree = () => { pan.active = false; };
+    const releaseTree = () => {
+      pan.active = false;
+    };
+    const dragThumb = (pointer, gameObject, dragX, dragY) => {
+      if (!canScroll || gameObject !== scrollThumb) return;
+      const thumbRange = Math.max(1, scrollTrackHeight - scrollThumbHeight);
+      applyScroll((dragY - scrollTrackTop - scrollThumbHeight / 2) / thumbRange * scrollMax);
+    };
+    const wheelTree = (pointer, gameObjects, deltaX, deltaY) => {
+      if (!canScroll) return;
+      if (pointer.x < viewport.x || pointer.x > viewport.x + viewport.width
+        || pointer.y < viewport.y || pointer.y > viewport.y + viewport.height) return;
+      applyScroll(scrollState.offset + deltaY * 0.7);
+    };
+    this.input.on('pointerdown', beginTreePointer);
     this.input.on('pointermove', moveTree);
     this.input.on('pointerup', releaseTree);
+    this.input.on('wheel', wheelTree);
+    this.input.setDraggable(scrollThumb);
+    this.input.on('drag', dragThumb);
     overlay.once('destroy', () => {
+      this.input.off('pointerdown', beginTreePointer);
       this.input.off('pointermove', moveTree);
       this.input.off('pointerup', releaseTree);
+      this.input.off('wheel', wheelTree);
+      this.input.off('drag', dragThumb);
+      treeContent.destroy(true);
+      if (treeCamera) this.cameras.remove(treeCamera);
+      if (this.upgradeTreeCamera === treeCamera) this.upgradeTreeCamera = null;
     });
-    overlay.add([dragSurface, treeContent]);
+    overlay.add([dragSurface, scrollTrack, scrollThumb]);
 
     const positions = {
-      nutrition: { x: 290, y: 288 }, production: { x: 530, y: 288 },
-      extraPile: { x: 800, y: 288 }, dye: { x: 1010, y: 288 },
-      evolution: { x: 410, y: 480 }, largeBone: { x: 690, y: 480 },
-      betterBone: { x: 900, y: 480 },
-      bonusProduction: { x: 200, y: 580 }, boneSearch: { x: 500, y: 580 }, fusedPile: { x: 760, y: 580 },
+      nutrition: { x: 380, y: 205 }, production: { x: 700, y: 205 },
+      extraPile: { x: 1020, y: 205 }, dye: { x: 1330, y: 205 },
+      evolution: { x: 520, y: 380 }, largeBone: { x: 950, y: 380 },
+      betterBone: { x: 1200, y: 380 },
+      bonusProduction: { x: 280, y: 590 }, boneSearch: { x: 520, y: 590 }, fusedPile: { x: 760, y: 590 },
+      ...(hasNewFoodTree ? {
+        newFood: { x: 520, y: 790 }, saltMine: { x: 400, y: 990 }, pond: { x: 640, y: 990 },
+      } : {}),
     };
     this.addUpgradeTreeLinks(treeContent, positions);
     Object.entries(positions).forEach(([branch, position]) => this.addUpgradeTreeNode(treeContent, branch, position.x, position.y));
-    overlay.add(this.makeTreeButton(580, 642, '升级完成', () => this.scene.restart()));
+    overlay.add(this.add.text(160, 72, '进化树', { fontFamily: TREE_FONT, fontSize: '28px', fontStyle: 'bold', color: '#f1ead8', shadow: { offsetX: 2, offsetY: 2, color: '#07111c', blur: 0, fill: true } }).setOrigin(0, 0.5));
+    overlay.add(this.add.text(1000, 72, `魂晶  ${this.meta.soul} ◆`, { fontFamily: TREE_FONT, fontSize: '19px', fontStyle: 'bold', color: '#f4ca67' }).setOrigin(1, 0.5));
+    overlay.add(this.makeTreeButton(580, 614, '完成', () => this.scene.restart(), 210, 72, 'complete'));
+
+    treeCamera = this.cameras.add(viewport.x, viewport.y, viewport.width, viewport.height)
+      .setScroll(viewport.x, viewport.y);
+    treeCamera.ignore(this.children.list.filter((child) => child !== treeContent));
+    this.cameras.main.ignore(treeContent);
+    this.upgradeTreeCamera = treeCamera;
   }
 
   addUpgradeTreeLinks(container, positions) {
-    const links = [
-      ['nutrition', 'evolution', 366],
-      ['production', 'evolution', 390],
-      ['extraPile', 'largeBone', 366],
-      ['extraPile', 'betterBone', 390],
-      ['evolution', 'bonusProduction', 538],
-      ['evolution', 'boneSearch', 550],
-      ['evolution', 'fusedPile', 562],
+    const groups = [
+      { sources: ['nutrition', 'production'], targets: ['evolution'] },
+      { sources: ['extraPile'], targets: ['largeBone', 'betterBone'] },
+      { sources: ['evolution'], targets: ['bonusProduction', 'boneSearch', 'fusedPile', 'newFood'] },
+      { sources: ['newFood'], targets: ['saltMine', 'pond'] },
     ];
-    links.forEach(([fromBranch, toBranch, laneY]) => {
-      const from = positions[fromBranch];
-      const to = positions[toBranch];
-      const start = { x: from.x, y: from.y + 48 };
-      const end = { x: to.x, y: to.y - 48 };
-      const route = [start, { x: start.x, y: laneY }, { x: end.x, y: laneY }, end];
-      container.add(PixelUI.connector(this, route, 0x58766f));
+    const asNode = (branch) => ({ ...positions[branch], width: PixelTheme.nodeDisplaySize, height: PixelTheme.nodeDisplaySize });
+    groups.forEach((group) => {
+      const sources = group.sources.filter((branch) => positions[branch]).map(asNode);
+      const targets = group.targets.filter((branch) => positions[branch]).map(asNode);
+      if (sources.length === 0 || targets.length === 0) return;
+      const layout = buildVerticalJunction({
+        sources,
+        targets,
+      });
+      layout.segments.forEach(({ start, end }) => {
+        container.add(PixelUI.connector(this, [start, end], 0x69a89a));
+      });
+      container.add(PixelUI.junction(this).setPosition(layout.junction.x, layout.junction.y));
     });
   }
 
@@ -1122,10 +1346,8 @@ class SlimeDungeonScene extends Phaser.Scene {
     const hidden = !state.known;
     const full = current >= max;
     const nodeView = this.add.container(x, y);
-    const visualState = current > 0 ? 'owned'
-      : branch === 'extraPile' && current === 0 ? 'locked'
-        : state.affordable && state.unlocked ? 'ready' : 'locked';
-    const circle = PixelUI.skillNode(this, branch, visualState, hidden)
+    const visualState = resolveSkillVisualState({ current, ...state });
+    const circle = PixelUI.skillNode(this, branch, visualState)
       .setInteractive({ useHandCursor: true });
     circle.on('pointerover', () => circle.setScale(1.06));
     circle.on('pointerout', () => circle.setScale(1));
@@ -1133,8 +1355,8 @@ class SlimeDungeonScene extends Phaser.Scene {
     nodeView.add(circle);
     if (current > 0) {
       const roman = ['I', 'II', 'III', 'IV'][current - 1] || 'IV';
-      const tierBadge = PixelUI.tierBadge(this, roman, visualState).setPosition(-37, -36);
-      const tier = this.add.text(-37, -36, roman, { fontFamily: 'serif', fontSize: '12px', fontStyle: 'bold', color: '#f5efda', stroke: '#14212a', strokeThickness: 2 }).setOrigin(0.5);
+      const tierBadge = PixelUI.tierBadge(this, roman, visualState).setPosition(-44, -45);
+      const tier = this.add.text(-44, -45, roman, { fontFamily: TREE_FONT, fontSize: '12px', fontStyle: 'bold', color: '#f5efda', stroke: '#14212a', strokeThickness: 2 }).setOrigin(0.5);
       nodeView.add([tierBadge, tier]);
     }
     overlay.add(nodeView);
@@ -1148,27 +1370,32 @@ class SlimeDungeonScene extends Phaser.Scene {
     const full = current >= max;
     const detail = this.add.container(0, 0).setDepth(65);
     this.upgradeDetail = detail;
+    const treeCamera = this.upgradeTreeCamera;
+    if (treeCamera) treeCamera.visible = false;
+    detail.once('destroy', () => {
+      if (this.upgradeTreeCamera === treeCamera && treeCamera) treeCamera.visible = true;
+    });
     detail.add(PixelUI.veil(this, WIDTH, HEIGHT, 0.52).setPosition(580, 360));
-    detail.add(pixelPanel(this, 580, 360, 474, 292, full ? 0x86d49a : state.unlocked ? 0xd1aa61 : 0x63747a, 0x14212a));
-    const detailState = current > 0 ? 'owned' : state.affordable && state.unlocked ? 'ready' : 'locked';
-    detail.add(PixelUI.skillNode(this, branch, detailState, hidden).setPosition(398, 282));
+    detail.add(PixelUI.treeDetailPanel(this, 580, 360, 500, 257));
+    const detailState = resolveSkillVisualState({ current, ...state });
+    detail.add(PixelUI.skillNode(this, branch, detailState).setPosition(398, 282));
     if (!hidden && state.unlocked && !full) {
       const nextRoman = ['I', 'II', 'III', 'IV'][current] || 'IV';
-      detail.add(PixelUI.tierBadge(this, nextRoman, state.affordable ? 'ready' : 'locked').setPosition(361, 246));
-      detail.add(this.add.text(361, 246, nextRoman, { fontFamily: 'serif', fontSize: '12px', fontStyle: 'bold', color: '#f5efda', stroke: '#14212a', strokeThickness: 2 }).setOrigin(0.5));
+      detail.add(PixelUI.tierBadge(this, nextRoman, state.affordable ? 'available' : 'locked').setPosition(361, 246));
+      detail.add(this.add.text(361, 246, nextRoman, { fontFamily: TREE_FONT, fontSize: '12px', fontStyle: 'bold', color: '#f5efda', stroke: '#14212a', strokeThickness: 2 }).setOrigin(0.5));
     }
-    detail.add(this.add.text(456, 262, hidden ? '未知节点' : full ? `${node.name} · 已完成` : node.name, { fontFamily: 'serif', fontSize: '25px', fontStyle: 'bold', color: '#f4ead3' }));
+    detail.add(this.add.text(456, 262, hidden ? '未知节点' : full ? `${node.name} · 已完成` : node.name, { fontFamily: TREE_FONT, fontSize: '24px', fontStyle: 'bold', color: '#f4ead3' }));
     const description = hidden ? '继续点亮前置能力后，这个节点会显露。' : full ? `该能力已升至 ${current}/${max}。` : node.desc;
-    detail.add(this.add.text(456, 300, description, { fontFamily: 'sans-serif', fontSize: '13px', color: '#aabbbc', wordWrap: { width: 255 } }));
+    detail.add(this.add.text(456, 300, description, { fontFamily: TREE_FONT, fontSize: '13px', color: '#aabbbc', wordWrap: { width: 255 } }));
     const status = full ? '已掌握' : !state.unlocked ? `解锁条件：${this.getRequirementText(node)}` : state.affordable ? `消耗 ${node.cost} ◆` : `魂晶不足 · 还差 ${node.cost - this.meta.soul} ◆`;
     detail.add(this.add.text(456, 350, `等级进度  ${current}/${max}`, { fontFamily: 'Microsoft YaHei, sans-serif', fontSize: '12px', color: '#8fa8a2' }));
-    detail.add(this.add.text(456, 378, status, { fontFamily: 'sans-serif', fontSize: '14px', fontStyle: 'bold', color: full ? '#a8e8ad' : state.unlocked && state.affordable ? '#f2c867' : '#8b9ca0', wordWrap: { width: 265 } }));
+    detail.add(this.add.text(456, 378, status, { fontFamily: TREE_FONT, fontSize: '14px', fontStyle: 'bold', color: full ? '#a8e8ad' : state.unlocked && state.affordable ? '#f2c867' : '#8b9ca0', wordWrap: { width: 265 } }));
     if (branch === 'dye' && current > 0) {
       const colors = [
         ['blue', '蓝色', 0x55c8ee], ['red', '红色', 0xed6f80], ['green', '绿色', 0x62d29b], ['yellow', '黄色', 0xefd064], ['purple', '紫色', 0xb079dc],
       ];
       const currentColor = colors.find(([color]) => color === (this.meta.dyeColor || 'blue')) || colors[0];
-      detail.add(this.add.text(456, 398, `当前：${currentColor[1]}`, { fontFamily: 'sans-serif', fontSize: '11px', color: '#d3e4d2' }));
+      detail.add(this.add.text(456, 398, `当前：${currentColor[1]}`, { fontFamily: TREE_FONT, fontSize: '11px', color: '#d3e4d2' }));
       colors.forEach(([color, label, tint], index) => {
         const chip = pixelPanel(this, 0, 0, 30, 22, color === (this.meta.dyeColor || 'blue') ? 0xf2c867 : 0x53686a, 0x16242b)
           .setPosition(520 + index * 42, 414).setInteractive({ useHandCursor: true });
@@ -1185,9 +1412,9 @@ class SlimeDungeonScene extends Phaser.Scene {
         });
       });
     }
-    detail.add(this.makeButton(493, 468, 140, 36, '返回', 0x394c52, () => detail.destroy(true)));
+    detail.add(this.makeTreeButton(493, 468, '返回', () => detail.destroy(true), 140, 56));
     if (!full && state.unlocked && state.affordable) {
-      detail.add(this.makeButton(666, 468, 140, 36, '确认升级', 0x396d56, () => this.buyUpgradeNode(node)));
+      detail.add(this.makeTreeButton(666, 468, '确认升级', () => this.buyUpgradeNode(node), 140, 56));
     }
   }
 
@@ -1212,13 +1439,26 @@ class SlimeDungeonScene extends Phaser.Scene {
     bg.on('pointerdown', action); button.add([bg, text]); return button;
   }
 
-  makeTreeButton(x, y, label, action) {
+  makeResultButton(x, y, label, variant, action) {
     const button = this.add.container(x, y);
-    const bg = PixelUI.treeButton(this, 280, 52).setInteractive({ useHandCursor: true });
-    const text = this.add.text(0, 0, label, { fontFamily: 'Microsoft YaHei, sans-serif', fontSize: '17px', fontStyle: 'bold', color: '#d8ead7' }).setOrigin(0.5);
-    bg.on('pointerover', () => bg.setTint(0xd0f1d4));
+    const bg = PixelUI.resultButton(this, variant, 184, 74).setInteractive({ useHandCursor: true });
+    const text = this.add.text(0, 0, label, { fontFamily: TREE_FONT, fontSize: '15px', fontStyle: 'bold', color: '#f5efda' }).setOrigin(0.5);
+    bg.on('pointerover', () => bg.setTint(0xfff4cc));
     bg.on('pointerout', () => bg.clearTint());
     bg.on('pointerdown', action);
+    button.add([bg, text]);
+    return button;
+  }
+
+  makeTreeButton(x, y, label, action, width = 176, height = 72, variant = 'dialog') {
+    const button = this.add.container(x, y);
+    const bg = PixelUI.treeButton(this, width, height, variant).setInteractive({ useHandCursor: true });
+    const text = this.add.text(0, variant === 'complete' ? -5 : 0, label, { fontFamily: TREE_FONT, fontSize: width < 150 ? '14px' : '18px', fontStyle: 'bold', color: '#e2f2df' }).setOrigin(0.5);
+    bg.on('pointerover', () => bg.setTint(0xdffff1));
+    bg.on('pointerout', () => bg.clearTint());
+    bg.on('pointerdown', () => bg.setTint(0xa8c6b7));
+    bg.on('pointerup', () => { bg.setTint(0xdffff1); action(); });
+    bg.on('pointerupoutside', () => bg.clearTint());
     button.add([bg, text]);
     return button;
   }

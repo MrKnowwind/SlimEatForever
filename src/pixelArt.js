@@ -1,4 +1,7 @@
 import * as Phaser from 'phaser';
+import {
+  ICON_TEXTURE_BY_BRANCH, ITEM_TEXTURE_BY_TYPE, NODE_TEXTURE_BY_STATE, PixelTheme, PRODUCTION_PROP_TEXTURE_BY_TYPE,
+} from './pixelUiAssets.js';
 
 export const PixelMetrics = Object.freeze({ UNIT: 4, OUTLINE: 4, UI_BORDER: 4 });
 
@@ -43,6 +46,12 @@ export function canvasTexture(scene, key, width, height, paint) {
 
 function imageFrom(scene, key, width, height, paint) {
   return scene.add.image(0, 0, canvasTexture(scene, key, width, height, paint));
+}
+
+function fitAsset(scene, key, maxWidth, maxHeight) {
+  const source = scene.textures.get(key).getSourceImage();
+  const scale = Math.min(maxWidth / source.width, maxHeight / source.height);
+  return scene.add.image(0, 0, key).setScale(scale);
 }
 
 const shadowMasks = {
@@ -167,18 +176,26 @@ export function createDungeon(scene, width, height) {
 }
 
 export function makeBattleBackdrop(scene, width, height) {
-  const key = `battle-room-${width}x${height}-v5`;
-  return imageFrom(scene, key, width, height, (ctx) => {
-    rect(ctx, 0, 0, width, height, PixelPalette.void);
-    rect(ctx, 0, 96, width, 378, PixelPalette.cave);
-    [[72, 126, 1], [214, 158, 4], [376, 118, 0], [704, 146, 2], [872, 120, 3], [1030, 178, 4], [118, 286, 2], [310, 328, 4], [786, 306, 1], [990, 344, 0]].forEach(([x, y, variant]) => paintTile(ctx, x, y, wallTiles[variant], true));
-    rect(ctx, 0, 474, width, height - 474, PixelPalette.floor);
-    [[48, 500, 0], [240, 516, 2], [432, 496, 1], [648, 514, 3], [846, 500, 0], [1020, 518, 1], [140, 608, 3], [374, 596, 0], [620, 616, 2], [884, 598, 1]].forEach(([x, y, variant]) => paintFloorTile(ctx, x, y, floorTiles[variant]));
-  }).setOrigin(0);
+  // Battle structure remains code-driven, while the formal environment comes
+  // from the same authored pixel background as the dungeon scene.
+  return scene.add.image(width / 2, height / 2, 'scene-dungeon-background')
+    .setDisplaySize(width, height)
+    .setTint(0x83939b)
+    .setAlpha(0.86);
 }
 
 export const DungeonProps = Object.freeze({
   bonePile(scene, direction = 1) {
+    const root = scene.add.container(0, 0);
+    const shadow = PixelShadows.create(scene, 'medium', 0.42).setPosition(0, 28);
+    const art = scene.add.image(0, 0, 'prop-bone-pile').setScale(0.225);
+    art.pixelBaseScaleX = 0.225;
+    art.pixelBaseScaleY = 0.225;
+    if (direction < 0) art.setFlipX(true);
+    root.add([shadow, art]);
+    return { root, artGroup: art };
+
+    {
     const art = imageFrom(scene, 'bone-pile-v8', 152, 88, (ctx) => {
       rect(ctx, 24, 68, 104, 4, PixelPalette.void, 0.5);
       rect(ctx, 40, 72, 72, 4, PixelPalette.void, 0.25);
@@ -208,8 +225,25 @@ export const DungeonProps = Object.freeze({
     art.setScale(direction, 1);
     root.add([shadow, art]);
     return { root, artGroup: art };
+    }
+  },
+  productionSource(scene, type, direction = 1) {
+    const texture = PRODUCTION_PROP_TEXTURE_BY_TYPE[type];
+    if (!texture) return this.bonePile(scene, direction);
+    const root = scene.add.container(0, 0);
+    const shadow = PixelShadows.create(scene, 'medium', 0.38).setPosition(0, 32);
+    const { width, height } = PixelTheme.productionPropDisplaySize;
+    const art = scene.add.image(0, 0, texture).setDisplaySize(width, height);
+    art.pixelBaseScaleX = art.scaleX;
+    art.pixelBaseScaleY = art.scaleY;
+    if (direction < 0) art.setFlipX(true);
+    root.add([shadow, art]);
+    return { root, artGroup: art };
   },
   groundPatch(scene, side = 'slime') {
+    return fitAsset(scene, `prop-battle-platform-${side}-v2`, 232, 76);
+
+    /* Legacy runtime-painted platform retained temporarily during asset migration. */
     const key = `ground-patch-${side}-v3`;
     return imageFrom(scene, key, 196, 52, (ctx) => {
       const base = side === 'slime' ? PixelPalette.stone : 0x3a2a2e;
@@ -225,6 +259,16 @@ export const DungeonProps = Object.freeze({
 
 export const ItemSprites = Object.freeze({
   create(scene, type = 'bone') {
+    const assetKey = ITEM_TEXTURE_BY_TYPE[type];
+    if (assetKey) {
+      const root = scene.add.container(0, 0);
+      const shadow = PixelShadows.create(scene, 'small', 0.42).setPosition(0, 17);
+      const glow = fitAsset(scene, assetKey, 62, 62).setTint(PixelPalette.white).setAlpha(0.28).setVisible(false);
+      const image = fitAsset(scene, assetKey, 56, 56);
+      root.add([shadow, glow, image]);
+      root.pixelGlow = glow;
+      return root;
+    }
     const key = `item-${type}-v6`;
     const image = imageFrom(scene, key, 56, 56, (ctx) => {
       if (type === 'adventurer') {
@@ -232,6 +276,14 @@ export const ItemSprites = Object.freeze({
         rect(ctx, 20, 10, 16, 16, PixelPalette.skin); rect(ctx, 18, 6, 20, 8, 0x4a332e);
         rect(ctx, 41, 10, 4, 36, PixelPalette.ink); rect(ctx, 45, 8, 4, 34, PixelPalette.wood);
         rect(ctx, 16, 29, 12, 4, PixelPalette.gold);
+      } else if (type === 'salt') {
+        rect(ctx, 20, 12, 16, 8, PixelPalette.ink); rect(ctx, 12, 20, 32, 24, PixelPalette.ink);
+        rect(ctx, 20, 16, 16, 8, 0xf7ffff); rect(ctx, 16, 24, 24, 16, 0xd9eef0); rect(ctx, 24, 20, 8, 8, 0xffffff);
+        rect(ctx, 16, 40, 24, 4, 0x82a9b4);
+      } else if (type === 'fish') {
+        rect(ctx, 12, 24, 32, 20, PixelPalette.ink); rect(ctx, 8, 28, 12, 12, PixelPalette.ink);
+        rect(ctx, 16, 28, 24, 12, 0x62b8d2); rect(ctx, 8, 32, 8, 8, 0x3b83a3);
+        rect(ctx, 24, 24, 8, 4, 0xa9e8ef); rect(ctx, 36, 28, 4, 4, PixelPalette.ink); rect(ctx, 40, 36, 8, 8, 0x2c6f91);
       } else {
         const unit = 4;
         const cells = [
@@ -318,12 +370,106 @@ export const EnemySprites = Object.freeze({
   },
 });
 
+function paintOutlinedIcon(ctx, cells, colors, offsetX = 28, offsetY = 28, unit = 4) {
+  const body = new Map(cells.map(([x, y, tone = 'main']) => [`${x},${y}`, tone]));
+  const outline = new Set();
+  body.forEach((tone, key) => {
+    const [x, y] = key.split(',').map(Number);
+    [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]].forEach(([nx, ny]) => {
+      if (!body.has(`${nx},${ny}`)) outline.add(`${nx},${ny}`);
+    });
+  });
+  outline.forEach((key) => {
+    const [x, y] = key.split(',').map(Number);
+    rect(ctx, offsetX + x * unit, offsetY + y * unit, unit, unit, colors.outline);
+  });
+  body.forEach((tone, key) => {
+    const [x, y] = key.split(',').map(Number);
+    rect(ctx, offsetX + x * unit, offsetY + y * unit, unit, unit, colors[tone] || colors.main);
+  });
+}
+
+function diagonalBone(offsetX = 0, offsetY = 0, reverse = false) {
+  const cells = [];
+  for (let step = 0; step < 7; step += 1) {
+    const x = offsetX + 3 + step;
+    const y = offsetY + (reverse ? 3 + step : 9 - step);
+    cells.push([x, y], [x, y + 1, step > 4 ? 'light' : step < 2 ? 'dark' : 'main']);
+  }
+  const ends = reverse
+    ? [[2, 2], [3, 2], [2, 3], [9, 10], [10, 10], [10, 9]]
+    : [[2, 9], [2, 10], [3, 10], [9, 2], [10, 2], [10, 3]];
+  ends.forEach(([x, y], index) => cells.push([offsetX + x, offsetY + y, index === 1 || index === 4 ? 'light' : 'main']));
+  return cells;
+}
+
+function paintSkillIcon(ctx, branch, colors, question = false) {
+  if (question) {
+    paintOutlinedIcon(ctx, [
+      [4, 2], [5, 1], [6, 1], [7, 2], [7, 3], [6, 4], [5, 4], [5, 5], [5, 6, 'dark'], [5, 9],
+    ], colors, 32, 30, 5);
+    return;
+  }
+
+  let cells = [];
+  if (branch === 'nutrition') {
+    cells = diagonalBone();
+  } else if (branch === 'production') {
+    for (let y = 2; y <= 10; y += 1) cells.push([6, y, y === 2 ? 'light' : 'main']);
+    for (let x = 2; x <= 10; x += 1) cells.push([x, 6, x < 4 ? 'light' : 'main']);
+  } else if (branch === 'extraPile') {
+    for (let x = 2; x <= 11; x += 1) cells.push([x, 10, x < 5 ? 'light' : 'dark']);
+    for (let x = 3; x <= 10; x += 1) cells.push([x, 9]);
+    [[4, 5], [5, 4], [6, 4], [7, 4], [8, 5], [4, 6], [5, 6, 'dark'], [6, 6], [7, 6, 'dark'], [8, 6], [5, 7], [6, 7, 'dark'], [7, 7]].forEach((cell) => cells.push(cell));
+  } else if (branch === 'dye') {
+    [[5, 2, 'light'], [6, 2], [7, 2], [5, 3], [6, 3], [7, 3], [4, 5, 'light'], [5, 4], [6, 4], [7, 4], [8, 5], [3, 6], [4, 6], [5, 6], [6, 6], [7, 6], [8, 6, 'dark'], [9, 6, 'dark'], [3, 7], [4, 7], [5, 7], [6, 7], [7, 7, 'accent'], [8, 7, 'accent'], [9, 7, 'dark'], [4, 8], [5, 8], [6, 8, 'accent'], [7, 8, 'accent'], [8, 8, 'dark'], [5, 9], [6, 9, 'dark'], [7, 9, 'dark']].forEach((cell) => cells.push(cell));
+  } else if (branch === 'evolution') {
+    [[6, 1, 'light'], [5, 2, 'light'], [6, 2], [7, 2], [4, 3], [5, 3], [6, 3], [7, 3], [8, 3], [3, 4], [4, 4], [5, 4], [6, 4], [7, 4], [8, 4], [9, 4, 'dark'], [2, 5], [3, 5], [4, 5], [5, 5], [6, 5], [7, 5], [8, 5], [9, 5, 'dark'], [10, 5, 'dark'], [2, 6], [3, 6], [4, 6], [5, 6], [6, 6], [7, 6], [8, 6, 'dark'], [9, 6, 'dark'], [10, 6, 'dark'], [3, 7], [4, 7], [5, 7], [6, 7], [7, 7], [8, 7, 'dark'], [9, 7, 'dark'], [4, 8], [5, 8], [6, 8], [7, 8, 'dark'], [8, 8, 'dark']].forEach((cell) => cells.push(cell));
+  } else if (branch === 'largeBone') {
+    cells = diagonalBone().flatMap(([x, y, tone]) => [[x, y, tone], [x + 1, y, tone]]);
+  } else if (branch === 'betterBone') {
+    cells = diagonalBone();
+    [[9, 7, 'accent'], [10, 6, 'accent'], [11, 5, 'accent'], [10, 5, 'accent'], [11, 4, 'accent']].forEach((cell) => cells.push(cell));
+  } else if (branch === 'bonusProduction') {
+    cells = [...diagonalBone(-2, 2), ...diagonalBone(2, -2)];
+  } else if (branch === 'boneSearch') {
+    for (let y = 2; y <= 8; y += 1) cells.push([6, y, y === 2 ? 'light' : 'main']);
+    [[4, 8], [5, 8], [6, 8], [7, 8], [8, 8], [4, 9], [5, 9], [6, 9, 'dark'], [7, 9, 'dark'], [8, 9, 'dark'], [5, 10, 'dark'], [6, 10, 'dark'], [7, 10, 'dark']].forEach((cell) => cells.push(cell));
+  } else if (branch === 'fusedPile') {
+    for (let y = 8; y <= 10; y += 1) for (let x = 2 + (10 - y); x <= 11 - (10 - y); x += 1) cells.push([x, y, y === 10 ? 'dark' : 'main']);
+    [[5, 4, 'light'], [6, 3], [7, 3], [8, 4], [4, 5], [5, 5], [6, 5], [7, 5], [8, 5], [9, 5], [4, 6], [5, 6, 'dark'], [6, 6], [7, 6, 'dark'], [8, 6], [9, 6], [5, 7], [6, 7, 'dark'], [7, 7, 'dark'], [8, 7]].forEach((cell) => cells.push(cell));
+  } else if (branch === 'newFood') {
+    cells = [[4, 4, 'light'], [5, 3], [6, 3], [7, 4], [4, 5], [5, 5], [6, 5, 'accent'], [7, 5], [8, 5], [5, 6], [6, 6, 'dark'], [7, 6], [6, 7], [5, 8, 'light'], [6, 8], [7, 8]];
+  } else if (branch === 'saltMine') {
+    cells = [[6, 2, 'light'], [5, 3, 'light'], [6, 3], [7, 3], [4, 4], [5, 4], [6, 4], [7, 4], [8, 4], [4, 5], [5, 5, 'dark'], [6, 5], [7, 5, 'dark'], [8, 5], [5, 6], [6, 6, 'light'], [7, 6], [6, 7, 'dark']];
+  } else if (branch === 'pond') {
+    cells = [[3, 5], [4, 4, 'light'], [5, 4], [6, 5], [7, 5], [8, 4, 'light'], [9, 5], [4, 6], [5, 6], [6, 6, 'dark'], [7, 6], [8, 6], [5, 7], [6, 7], [7, 7, 'dark'], [6, 8, 'accent'], [7, 8]];
+  }
+  paintOutlinedIcon(ctx, cells, colors);
+}
+
 export const PixelUI = Object.freeze({
   panel(scene, x, y, width, height, edge = PixelPalette.edge, fillColor = PixelPalette.ink, alpha = 0.96) {
     const key = textureKey('ui-panel-v4', [width, height, edge, fillColor]);
     return imageFrom(scene, key, width, height, (ctx) => {
       rect(ctx, 0, 0, width, height, edge); rect(ctx, PixelMetrics.UI_BORDER, PixelMetrics.UI_BORDER, width - 8, height - 8, fillColor, alpha); rect(ctx, 12, 8, width - 24, 4, PixelPalette.white, 0.07);
     }).setPosition(x, y);
+  },
+  treePanel(scene, x, y, width, height) {
+    return fitAsset(scene, 'panel-frame', width, height)
+      .setPosition(x, y);
+  },
+  treeDetailPanel(scene, x, y, width, height) {
+    return fitAsset(scene, 'tree-detail-panel-v3', width, height).setPosition(x, y);
+  },
+  resultPanel(scene, x, y, width, height) {
+    // The generated frame has a few transparent pixels heavier on the left;
+    // offset the sprite slightly so its visible medallion/frame center follows the UI centerline.
+    return fitAsset(scene, 'scene-result-panel', width, height).setPosition(x - 30, y);
+  },
+  resultButton(scene, variant, width, height) {
+    const key = variant === 'confirm' ? 'scene-button-confirm' : 'scene-button-secondary';
+    return fitAsset(scene, key, width, height);
   },
   bar(scene, x, y, width, height, color) {
     const background = imageFrom(scene, textureKey('ui-bar-bg-v3', [width, height]), width, height, (ctx) => {
@@ -335,114 +481,230 @@ export const PixelUI = Object.freeze({
     return { background, fill: fillImage, maxWidth: width - 8 };
   },
   skillNode(scene, branch = 'nutrition', state = 'locked', question = false) {
+    const visualState = question ? 'unknown' : state === 'ready' ? 'available' : state;
+    const root = scene.add.container(0, 0)
+      .setSize(PixelTheme.nodeDisplaySize, PixelTheme.nodeDisplaySize);
+    const shell = fitAsset(scene, NODE_TEXTURE_BY_STATE[visualState] || NODE_TEXTURE_BY_STATE.locked,
+      PixelTheme.nodeDisplaySize, PixelTheme.nodeDisplaySize);
+    const iconKey = visualState === 'unknown' ? 'icon-unknown' : ICON_TEXTURE_BY_BRANCH[branch] || 'icon-unknown';
+    const icon = fitAsset(scene, iconKey, PixelTheme.iconDisplaySize, PixelTheme.iconDisplaySize)
+      // The flask's visual mass sits below its transparent bottle neck;
+      // lift only this icon so its perceived center matches the other nodes.
+      .setPosition(branch === 'dye' ? -5 : 0, branch === 'dye' ? -4 : 0);
+    if (visualState === 'locked') icon.setAlpha(0.82).setTint(0xb8c5c5);
+    root.add([shell, icon]);
+    return root;
+
+    /* Legacy runtime-painted node kept temporarily below for diff safety; unreachable after asset migration. */
     const stateColors = {
-      owned: [0x1d3934, 0x7fc89a, 0x16302e, 0xd4f4cf],
-      ready: [0x5b4428, 0xe5ba5c, 0x29271f, 0xffedb1],
-      locked: [0x273b43, 0x6f858a, 0x18282f, 0xa4b8b5],
+      owned: [0x183a39, 0x85e0aa, 0x102b2b, 0xd9f7d7],
+      ready: [0x5a4325, 0xf1c65f, 0x2b261d, 0xffedb5],
+      locked: [0x243842, 0x7897a4, 0x142630, 0xa9c2c8],
     };
     const [rimDark, rimLight, fill, detail] = stateColors[state] || stateColors.locked;
-    const key = textureKey('skill-node-v9', [branch, state, question]);
-    return imageFrom(scene, key, 96, 96, (ctx) => {
-      const outer = [16, 32, 48, 64, 72, 80, 80, 80, 80, 80, 80, 80, 80, 72, 64, 48, 32, 16];
-      outer.forEach((width, row) => rect(ctx, (96 - width) / 2, row * 4 + 12, width, 4, rimDark));
-      outer.slice(0, 9).forEach((width, row) => rect(ctx, (96 - width) / 2, row * 4 + 12, width, 2, rimLight));
-      const inner = [16, 32, 48, 56, 64, 64, 64, 64, 64, 64, 64, 64, 56, 48, 32, 16];
-      inner.forEach((width, row) => rect(ctx, (96 - width) / 2, row * 4 + 16, width, 4, fill));
-      rect(ctx, 36, 76, 24, 4, rimDark, 0.75);
+    const key = textureKey('skill-node-v14', [branch, state, question]);
+    return imageFrom(scene, key, 112, 112, (ctx) => {
+      const rows = [24, 40, 56, 72, 88, 96, 104, 104, 104, 104, 104, 104, 104, 104, 104, 104, 104, 104, 96, 88, 72, 56, 40, 24];
+      rows.forEach((width, row) => rect(ctx, (112 - width) / 2 + 4, row * 4 + 12, width, 4, 0x07111a, 0.62));
+      rows.forEach((width, row) => rect(ctx, (112 - width) / 2, row * 4 + 4, width, 4, rimDark));
+      rows.slice(1, -1).forEach((width, index) => rect(ctx, (112 - width + 12) / 2, index * 4 + 8, width - 12, 4, fill));
+      rect(ctx, 28, 16, 28, 4, rimLight, 0.72);
+      rect(ctx, 20, 28, 4, 20, rimLight, 0.72);
+      const mutedIcon = state === 'locked';
+      const themedMain = branch === 'dye' ? 0x8969cb
+        : branch === 'evolution' ? 0x55bfe3
+          : branch === 'production' ? 0x9be5bb
+            : branch === 'saltMine' ? 0xd9eef0
+              : branch === 'pond' ? 0x62b8d2
+                : branch === 'newFood' ? 0x8bd8c5 : PixelPalette.bone;
+      const themedLight = branch === 'dye' ? 0xc8aff0
+        : branch === 'evolution' ? 0xbcecf5
+          : branch === 'saltMine' ? 0xffffff
+            : branch === 'pond' ? 0xa9e8ef
+              : branch === 'newFood' ? 0xc7f4dd : PixelPalette.boneLight;
+      const themedDark = branch === 'dye' ? 0x584497
+        : branch === 'evolution' ? 0x397fae
+          : branch === 'saltMine' ? 0x82a9b4
+            : branch === 'pond' ? 0x2c6f91
+              : branch === 'newFood' ? 0x397f72 : PixelPalette.boneShade;
+      paintSkillIcon(ctx, branch, {
+        outline: 0x07121c,
+        main: mutedIcon ? detail : themedMain,
+        light: mutedIcon ? rimLight : themedLight,
+        dark: mutedIcon ? rimDark : themedDark,
+        accent: mutedIcon ? rimLight : branch === 'dye' ? 0xa981df : 0x7bd9bb,
+      }, question);
+      return;
+      if (false) {
       if (question) {
-        [[38, 32, 20, 4], [54, 36, 8, 14], [46, 46, 16, 8], [42, 52, 8, 12], [42, 66, 10, 8]].forEach(([x, y, w, h]) => rect(ctx, x, y, w, h, rimDark));
-        [[40, 34, 16, 2], [56, 38, 4, 10], [48, 48, 10, 2], [44, 54, 4, 8], [44, 68, 6, 4]].forEach(([x, y, w, h]) => rect(ctx, x, y, w, h, detail));
+        rect(ctx, 42, 34, 28, 8, 0x0a1720); rect(ctx, 62, 38, 12, 20, 0x0a1720);
+        rect(ctx, 50, 52, 20, 12, 0x0a1720); rect(ctx, 46, 60, 12, 16, 0x0a1720); rect(ctx, 46, 82, 12, 10, 0x0a1720);
+        rect(ctx, 46, 38, 20, 4, detail); rect(ctx, 66, 42, 4, 12, detail);
+        rect(ctx, 54, 56, 12, 4, detail); rect(ctx, 50, 62, 4, 12, detail); rect(ctx, 50, 84, 4, 6, detail);
         return;
       }
       const muted = state === 'locked';
-      const iconOutline = 0x101b24;
+      const iconOutline = 0x07121c;
       const boneDark = muted ? rimDark : PixelPalette.boneShade;
       const boneMain = muted ? detail : PixelPalette.bone;
       const boneLight = muted ? rimLight : PixelPalette.boneLight;
       if (branch === 'nutrition') {
-        [[32, 54], [36, 50], [40, 46], [44, 42], [48, 38]].forEach(([x, y]) => rect(ctx, x, y, 8, 8, iconOutline));
-        rect(ctx, 28, 54, 12, 14, iconOutline); rect(ctx, 50, 34, 14, 12, iconOutline);
-        [[34, 56], [38, 52], [42, 48], [46, 44], [50, 40]].forEach(([x, y]) => rect(ctx, x, y, 4, 4, boneMain));
-        rect(ctx, 30, 56, 8, 10, boneMain); rect(ctx, 52, 36, 10, 8, boneMain);
-        rect(ctx, 52, 36, 6, 2, boneLight);
+        [[34, 72], [38, 68], [42, 64], [46, 60], [50, 56], [54, 52], [58, 48], [62, 44], [66, 40]].forEach(([x, y]) => rect(ctx, x, y, 12, 12, iconOutline));
+        [[30, 68], [34, 76], [70, 34], [76, 40]].forEach(([x, y]) => rect(ctx, x, y, 12, 12, iconOutline));
+        [[38, 70], [42, 66], [46, 62], [50, 58], [54, 54], [58, 50], [62, 46], [66, 42]].forEach(([x, y]) => rect(ctx, x, y, 8, 8, boneMain));
+        [[32, 70], [36, 78], [70, 36], [78, 42]].forEach(([x, y]) => rect(ctx, x, y, 8, 8, boneMain));
+        rect(ctx, 66, 40, 8, 4, boneLight);
       } else if (branch === 'production') {
-        rect(ctx, 44, 34, 8, 28, iconOutline); rect(ctx, 32, 42, 32, 10, iconOutline);
-        rect(ctx, 46, 36, 4, 24, detail); rect(ctx, 34, 44, 28, 4, detail);
-        rect(ctx, 38, 44, 8, 2, rimLight, 0.72);
+        rect(ctx, 50, 32, 16, 56, iconOutline); rect(ctx, 30, 52, 56, 16, iconOutline);
+        rect(ctx, 54, 36, 8, 48, detail); rect(ctx, 34, 56, 48, 8, detail);
       } else if (branch === 'extraPile') {
-        [[28, 62], [32, 58], [36, 54], [40, 50]].forEach(([x, y]) => rect(ctx, x, y, 8, 8, iconOutline));
-        [[56, 50], [60, 54], [64, 58], [68, 62]].forEach(([x, y]) => rect(ctx, x, y, 8, 8, iconOutline));
-        [[30, 62], [34, 58], [38, 54], [42, 50], [58, 50], [62, 54], [66, 58], [70, 62]].forEach(([x, y]) => rect(ctx, x, y, 4, 4, boneMain));
-        rect(ctx, 40, 42, 16, 20, iconOutline); rect(ctx, 36, 46, 24, 12, iconOutline); rect(ctx, 44, 60, 8, 4, iconOutline);
-        rect(ctx, 42, 44, 12, 16, boneMain); rect(ctx, 38, 48, 20, 8, boneMain); rect(ctx, 46, 60, 4, 2, boneDark);
-        rect(ctx, 42, 50, 4, 4, iconOutline); rect(ctx, 52, 50, 4, 4, iconOutline); rect(ctx, 42, 44, 6, 2, boneLight);
+        rect(ctx, 26, 70, 64, 12, iconOutline); rect(ctx, 34, 58, 48, 16, iconOutline);
+        rect(ctx, 42, 40, 32, 26, iconOutline); rect(ctx, 38, 46, 40, 14, iconOutline);
+        rect(ctx, 30, 72, 56, 6, boneDark); rect(ctx, 38, 60, 40, 10, boneMain);
+        rect(ctx, 46, 42, 24, 20, boneMain); rect(ctx, 42, 48, 32, 10, boneMain);
+        rect(ctx, 48, 50, 6, 6, iconOutline); rect(ctx, 64, 50, 6, 6, iconOutline); rect(ctx, 56, 58, 8, 4, iconOutline);
+        rect(ctx, 48, 42, 12, 4, boneLight);
       } else if (branch === 'largeBone') {
-        rect(ctx, 24, 46, 16, 12, iconOutline); rect(ctx, 56, 34, 16, 12, iconOutline);
-        rect(ctx, 32, 42, 32, 20, iconOutline); rect(ctx, 38, 36, 20, 32, iconOutline);
-        rect(ctx, 28, 48, 12, 8, boneMain); rect(ctx, 56, 36, 12, 8, boneMain);
-        rect(ctx, 38, 42, 20, 20, boneMain); rect(ctx, 42, 38, 12, 28, boneMain);
-        rect(ctx, 42, 40, 8, 4, boneLight); rect(ctx, 34, 48, 8, 4, boneLight);
+        rect(ctx, 24, 58, 20, 20, iconOutline); rect(ctx, 68, 34, 20, 20, iconOutline);
+        [[38, 62], [46, 54], [54, 46], [62, 38]].forEach(([x, y]) => rect(ctx, x, y, 20, 20, iconOutline));
+        rect(ctx, 28, 62, 14, 12, boneMain); rect(ctx, 72, 38, 12, 12, boneMain);
+        [[42, 62], [50, 54], [58, 46], [66, 38]].forEach(([x, y]) => rect(ctx, x, y, 12, 12, boneMain));
+        rect(ctx, 68, 40, 10, 4, boneLight);
       } else if (branch === 'betterBone') {
-        rect(ctx, 28, 48, 12, 12, iconOutline); rect(ctx, 56, 36, 12, 12, iconOutline);
-        rect(ctx, 36, 44, 28, 20, iconOutline); rect(ctx, 42, 38, 16, 32, iconOutline);
-        rect(ctx, 30, 50, 8, 8, boneMain); rect(ctx, 58, 38, 8, 8, boneMain);
-        rect(ctx, 38, 46, 24, 16, boneMain); rect(ctx, 44, 40, 12, 28, boneMain);
-        rect(ctx, 44, 42, 8, 4, boneLight); rect(ctx, 62, 30, 4, 12, detail); rect(ctx, 58, 34, 12, 4, detail);
+        rect(ctx, 26, 62, 18, 18, iconOutline); rect(ctx, 70, 34, 18, 18, iconOutline);
+        [[38, 62], [46, 54], [54, 46], [62, 38]].forEach(([x, y]) => rect(ctx, x, y, 18, 18, iconOutline));
+        [[30, 66], [42, 64], [50, 56], [58, 48], [66, 40], [74, 38]].forEach(([x, y]) => rect(ctx, x, y, 10, 10, boneMain));
+        rect(ctx, 74, 36, 8, 4, boneLight); rect(ctx, 84, 26, 4, 14, detail); rect(ctx, 78, 32, 16, 4, detail);
       } else if (branch === 'dye') {
         const dyeBase = muted ? detail : 0x8d72d8;
         const dyeLight = muted ? rimLight : 0xd2b7ff;
-        rect(ctx, 42, 34, 12, 8, iconOutline); rect(ctx, 38, 42, 20, 24, iconOutline);
-        rect(ctx, 42, 38, 12, 6, dyeBase); rect(ctx, 40, 44, 16, 18, dyeBase); rect(ctx, 44, 62, 8, 4, dyeBase);
-        rect(ctx, 42, 40, 8, 4, dyeLight); rect(ctx, 52, 48, 4, 8, detail);
+        rect(ctx, 48, 30, 20, 12, iconOutline); rect(ctx, 42, 42, 32, 42, iconOutline);
+        rect(ctx, 46, 46, 24, 34, dyeBase); rect(ctx, 50, 34, 16, 10, dyeBase);
+        rect(ctx, 50, 48, 8, 20, dyeLight); rect(ctx, 58, 72, 8, 6, 0x6545a8);
       } else if (branch === 'bonusProduction') {
-        rect(ctx, 28, 52, 20, 12, iconOutline); rect(ctx, 50, 40, 20, 12, iconOutline);
-        rect(ctx, 32, 54, 16, 8, boneMain); rect(ctx, 54, 42, 16, 8, boneMain);
-        rect(ctx, 44, 46, 20, 8, iconOutline); rect(ctx, 48, 44, 12, 12, iconOutline);
-        rect(ctx, 50, 46, 8, 8, detail); rect(ctx, 64, 30, 4, 16, detail); rect(ctx, 58, 36, 16, 4, detail);
+        rect(ctx, 24, 62, 40, 16, iconOutline); rect(ctx, 48, 38, 40, 16, iconOutline);
+        rect(ctx, 28, 66, 32, 8, boneMain); rect(ctx, 52, 42, 32, 8, boneMain);
+        rect(ctx, 74, 58, 8, 26, iconOutline); rect(ctx, 66, 66, 24, 8, iconOutline);
+        rect(ctx, 76, 60, 4, 22, detail); rect(ctx, 68, 68, 20, 4, detail);
       } else if (branch === 'boneSearch') {
-        rect(ctx, 44, 34, 8, 40, iconOutline); rect(ctx, 36, 66, 24, 8, iconOutline);
-        rect(ctx, 46, 36, 4, 34, boneMain); rect(ctx, 40, 68, 16, 4, boneMain);
-        rect(ctx, 58, 40, 16, 4, iconOutline); rect(ctx, 66, 36, 8, 12, detail);
+        rect(ctx, 50, 28, 16, 52, iconOutline); rect(ctx, 36, 70, 36, 16, iconOutline);
+        rect(ctx, 54, 32, 8, 42, boneMain); rect(ctx, 42, 74, 24, 8, boneMain);
+        rect(ctx, 68, 34, 22, 8, iconOutline); rect(ctx, 82, 30, 10, 16, detail);
       } else if (branch === 'fusedPile') {
-        rect(ctx, 24, 54, 48, 14, iconOutline); rect(ctx, 32, 44, 36, 14, iconOutline);
-        rect(ctx, 40, 34, 20, 16, iconOutline); rect(ctx, 28, 56, 40, 10, boneMain);
-        rect(ctx, 36, 46, 28, 10, boneMain); rect(ctx, 44, 36, 12, 12, boneMain);
-        rect(ctx, 34, 54, 12, 4, boneLight); rect(ctx, 56, 44, 8, 4, boneLight);
+        rect(ctx, 20, 68, 76, 16, iconOutline); rect(ctx, 28, 54, 60, 18, iconOutline); rect(ctx, 40, 38, 36, 20, iconOutline);
+        rect(ctx, 24, 72, 68, 8, boneDark); rect(ctx, 32, 58, 52, 10, boneMain); rect(ctx, 44, 42, 28, 14, boneMain);
+        rect(ctx, 48, 44, 14, 4, boneLight);
       } else {
-        rect(ctx, 42, 36, 12, 8, iconOutline); rect(ctx, 36, 44, 24, 20, iconOutline); rect(ctx, 42, 64, 12, 4, iconOutline);
-        rect(ctx, 44, 38, 8, 6, detail); rect(ctx, 38, 46, 20, 16, detail); rect(ctx, 44, 62, 8, 4, rimDark);
-        rect(ctx, 40, 48, 6, 6, PixelPalette.white, muted ? 0.35 : 0.78);
+        rect(ctx, 44, 36, 28, 12, iconOutline); rect(ctx, 36, 46, 44, 38, iconOutline); rect(ctx, 44, 82, 28, 8, iconOutline);
+        rect(ctx, 48, 40, 20, 8, detail); rect(ctx, 40, 50, 36, 30, detail); rect(ctx, 48, 80, 20, 6, rimDark);
+        rect(ctx, 44, 52, 8, 12, PixelPalette.white, muted ? 0.3 : 0.76);
       }
-      if (state === 'owned') { rect(ctx, 64, 67, 8, 4, detail); rect(ctx, 68, 63, 4, 4, detail); }
+      }
     });
   },
   tierBadge(scene, tier, state = 'locked') {
-    const colors = state === 'owned' ? [0x23483e, 0xc6efcc] : state === 'ready' ? [0x6c512d, 0xffe6a0] : [0x31454b, 0xc1d0cc];
+    const colors = state === 'owned' ? [0x23483e, 0xc6efcc] : state === 'available' ? [0x6c512d, 0xffe6a0] : [0x31454b, 0xc1d0cc];
     return imageFrom(scene, textureKey('skill-tier-v2', [tier, state]), 28, 20, (ctx) => {
       rect(ctx, 4, 0, 20, 4, colors[0]); rect(ctx, 0, 4, 28, 12, colors[0]); rect(ctx, 4, 16, 20, 4, colors[0]);
       rect(ctx, 4, 4, 20, 8, colors[1], 0.2);
     });
   },
   treeBackdrop(scene, width, height) {
-    return imageFrom(scene, textureKey('tree-backdrop-v1', [width, height]), width, height, (ctx) => {
-      rect(ctx, 0, 0, width, height, 0x101a24);
-      for (let x = 88; x < width; x += 176) rect(ctx, x, 76, 2, height - 148, 0x52706d, 0.08);
-      for (let y = 156; y < height - 72; y += 128) rect(ctx, 72, y, width - 144, 2, 0x52706d, 0.06);
-      [[126, 180], [916, 164], [944, 470], [188, 500]].forEach(([x, y]) => { rect(ctx, x, y, 4, 4, 0x81aa9a, 0.12); rect(ctx, x + 8, y, 4, 4, 0x81aa9a, 0.06); });
+    return PixelUI.treePanel(scene, 0, 0, width, height);
+    /* Legacy runtime-painted backdrop is unreachable after asset migration. */
+    return imageFrom(scene, textureKey('tree-backdrop-v4', [width, height]), width, height, (ctx) => {
+      rect(ctx, 0, 0, width, height, 0x07111b);
+      rect(ctx, 4, 4, width - 8, height - 8, 0x284957);
+      rect(ctx, 8, 8, width - 16, height - 16, 0x0a1723);
+      rect(ctx, 12, 12, width - 24, height - 24, 0x102130);
+      rect(ctx, 16, 16, width - 32, height - 32, 0x0c1925);
+      rect(ctx, 20, 20, width - 40, 4, 0x4b7580, 0.42);
+      rect(ctx, 20, height - 24, width - 40, 4, 0x203f4e, 0.62);
+      for (let y = 28; y < height - 28; y += 8) {
+        const alpha = 0.018 + (y / height) * 0.025;
+        rect(ctx, 24, y, width - 48, 4, y % 16 === 0 ? 0x173044 : 0x0a1520, alpha);
+      }
+      for (let x = 88; x < width - 60; x += 148) rect(ctx, x, 112, 2, height - 214, 0x4d8290, 0.075);
+      for (let y = 170; y < height - 72; y += 116) rect(ctx, 58, y, width - 116, 2, 0x4d8290, 0.065);
+      const cx = Math.round(width / 2);
+      const cy = Math.round(height / 2 + 34);
+      [184, 116].forEach((radius, index) => {
+        const color = index === 0 ? 0x315866 : 0x3d6d75;
+        for (let step = 0; step <= radius; step += 4) {
+          const offset = radius - step;
+          [[cx + step, cy + offset], [cx - step, cy + offset], [cx + step, cy - offset], [cx - step, cy - offset]]
+            .forEach(([x, y]) => rect(ctx, x - 2, y - 2, 4, 4, color, index === 0 ? 0.085 : 0.07));
+        }
+      });
+      rect(ctx, cx - 4, cy - 20, 8, 40, 0x3d6d75, 0.09); rect(ctx, cx - 20, cy - 4, 40, 8, 0x3d6d75, 0.09);
+      [42, width - 74].forEach((x) => {
+        rect(ctx, x, 166, 32, 196, 0x102635, 0.66); rect(ctx, x + 4, 170, 24, 150, 0x173142, 0.52);
+        rect(ctx, x + 8, 188, 16, 4, 0x42697a, 0.22); rect(ctx, x + 14, 190, 4, 64, 0x42697a, 0.18);
+        rect(ctx, x + 8, 320, 16, 8, 0x173142); rect(ctx, x + 12, 328, 8, 16, 0x173142);
+      });
+      [[0, 0], [width - 28, 0], [0, height - 28], [width - 28, height - 28]].forEach(([x, y]) => {
+        rect(ctx, x, y, 28, 8, 0x315a68); rect(ctx, x, y, 8, 28, 0x315a68);
+        rect(ctx, x + 8, y + 8, 8, 8, 0x77a3a5, 0.38);
+      });
+    });
+  },
+  treeHeader(scene, width = 1024, height = 88) {
+    return PixelUI.treePanel(scene, 0, 0, width, height);
+    /* Legacy runtime-painted header is unreachable after asset migration. */
+    return imageFrom(scene, textureKey('tree-header-v4', [width, height]), width, height, (ctx) => {
+      rect(ctx, 0, 0, width, height, 0x0c1925);
+      rect(ctx, 0, height - 4, width, 4, 0x315664, 0.72);
+      rect(ctx, 148, 43, 258, 2, 0x4f7780, 0.3); rect(ctx, width - 406, 43, 258, 2, 0x4f7780, 0.3);
+      [[414, 43], [width - 414, 43]].forEach(([x, y]) => {
+        rect(ctx, x - 4, y - 4, 8, 8, 0x355864); rect(ctx, x - 2, y - 6, 4, 12, 0x6b9290, 0.52);
+      });
+    });
+  },
+  treeCover(scene, width, height) {
+    return imageFrom(scene, textureKey('tree-cover-v1', [width, height]), width, height, (ctx) => rect(ctx, 0, 0, width, height, 0x0c1925));
+  },
+  treeFooter(scene, width = 1024, height = 96) {
+    return PixelUI.treePanel(scene, 0, 0, width, height);
+    /* Legacy runtime-painted footer is unreachable after asset migration. */
+    return imageFrom(scene, textureKey('tree-footer-v1', [width, height]), width, height, (ctx) => {
+      rect(ctx, 0, 0, width, height, 0x0c1925);
+      rect(ctx, 0, 0, width, 4, 0x284958, 0.82);
+      rect(ctx, 120, 8, width - 240, 2, 0x4d7880, 0.18);
+      rect(ctx, 16, height - 8, width - 32, 4, 0x07111b, 0.5);
     });
   },
   resourceBadge(scene, width = 128) {
-    return imageFrom(scene, textureKey('tree-resource-v1', [width]), width, 36, (ctx) => {
-      rect(ctx, 8, 0, width - 16, 4, 0x405b5e); rect(ctx, 4, 4, width - 8, 28, 0x405b5e); rect(ctx, 8, 32, width - 16, 4, 0x405b5e);
-      rect(ctx, 10, 6, width - 20, 24, 0x162631); rect(ctx, 14, 8, width - 28, 2, 0x92b1a7, 0.18);
-      rect(ctx, 16, 10, 8, 4, 0xffdf83); rect(ctx, 12, 14, 16, 8, 0xd7a956);
-      rect(ctx, 16, 22, 8, 6, 0xb87832); rect(ctx, 16, 14, 8, 8, 0xffef9b);
+    return PixelUI.treePanel(scene, 0, 0, width, 44);
+    /* Legacy runtime-painted badge is unreachable after asset migration. */
+    return imageFrom(scene, textureKey('tree-resource-v5', [width]), width, 44, (ctx) => {
+      rect(ctx, 8, 0, width - 16, 4, 0x355965); rect(ctx, 4, 4, width - 8, 36, 0x355965); rect(ctx, 8, 40, width - 16, 4, 0x18323d);
+      rect(ctx, 10, 6, width - 20, 30, 0x0b1d2a); rect(ctx, 14, 8, width - 28, 2, 0x759698, 0.24);
+      rect(ctx, 20, 8, 12, 4, 0x8d5a2b); rect(ctx, 16, 12, 20, 4, 0xb87832);
+      rect(ctx, 12, 16, 28, 12, 0xc98b38); rect(ctx, 16, 28, 20, 4, 0x8d5a2b);
+      rect(ctx, 20, 12, 12, 16, 0xf0bd50); rect(ctx, 20, 12, 8, 8, 0xffdf7e);
     });
   },
-  treeButton(scene, width = 224, height = 40) {
-    return imageFrom(scene, textureKey('tree-button-v1', [width, height]), width, height, (ctx) => {
-      rect(ctx, 8, 0, width - 16, 4, 0x739d85); rect(ctx, 4, 4, width - 8, height - 8, 0x739d85); rect(ctx, 8, height - 4, width - 16, 4, 0x739d85);
-      rect(ctx, 10, 6, width - 20, height - 12, 0x1e4038); rect(ctx, 14, 9, width - 28, 3, 0xa6d2a9, 0.26);
+  treeButton(scene, width = 224, height = 40, variant = 'dialog') {
+    return fitAsset(scene, variant === 'complete' ? 'tree-complete-button-v2' : 'tree-dialog-button', width, height);
+    /* Legacy runtime-painted button is unreachable after asset migration. */
+    return imageFrom(scene, textureKey('tree-button-v3', [width, height]), width, height, (ctx) => {
+      rect(ctx, 12, 0, width - 24, 4, 0x8bd4a5); rect(ctx, 4, 8, width - 8, height - 16, 0x8bd4a5); rect(ctx, 12, height - 4, width - 24, 4, 0x396d5f);
+      rect(ctx, 8, 8, width - 16, height - 16, 0x173f38); rect(ctx, 14, 12, width - 28, 4, 0xa8e4b6, 0.28);
+      rect(ctx, 20, height - 12, width - 40, 4, 0x0b2727, 0.62);
+      rect(ctx, 22, height / 2 - 2, 4, 4, 0x83caa0); rect(ctx, width - 26, height / 2 - 2, 4, 4, 0x83caa0);
+    });
+  },
+  zoomButton(scene, label = '+') {
+    return imageFrom(scene, textureKey('tree-zoom-v1', [label]), 36, 32, (ctx) => {
+      rect(ctx, 4, 0, 28, 4, 0x365966); rect(ctx, 0, 4, 36, 24, 0x365966); rect(ctx, 4, 28, 28, 4, 0x18323e);
+      rect(ctx, 4, 4, 28, 24, 0x102632); rect(ctx, 8, 8, 20, 4, 0x6d9898, 0.3);
+      rect(ctx, 10, 14, 16, 4, 0xc1ddd6);
+      if (label === '+') rect(ctx, 16, 8, 4, 16, 0xc1ddd6);
+    });
+  },
+  junction(scene) {
+    return imageFrom(scene, 'tree-junction-v1', 12, 12, (ctx) => {
+      rect(ctx, 0, 0, 12, 12, 0x183038); rect(ctx, 2, 2, 8, 8, 0x7bc4aa); rect(ctx, 4, 4, 4, 4, 0xb7e5ca);
     });
   },
   timeline(scene, width = 808) {
@@ -451,6 +713,9 @@ export const PixelUI = Object.freeze({
     });
   },
   timelineIcon(scene, type = 'slime') {
+    return fitAsset(scene, `scene-timeline-${type}`, 26, 26);
+
+    /* Legacy runtime-painted timeline icon retained temporarily during asset migration. */
     return imageFrom(scene, `timeline-icon-${type}-v4`, 16, 16, (ctx) => {
       if (type === 'slime') {
         rect(ctx, 2, 5, 12, 8, 0x55c8ee); rect(ctx, 4, 3, 8, 10, 0x8ce4f3); rect(ctx, 4, 8, 3, 3, 0x12245f); rect(ctx, 10, 8, 3, 3, 0x12245f); rect(ctx, 4, 4, 4, 2, 0xe7ffff);
@@ -458,6 +723,9 @@ export const PixelUI = Object.freeze({
         rect(ctx, 2, 4, 12, 10, 0x4a332e); rect(ctx, 4, 2, 8, 4, 0x8c9aa0); rect(ctx, 5, 7, 7, 5, PixelPalette.skin); rect(ctx, 12, 2, 2, 13, PixelPalette.wood); rect(ctx, 9, 2, 6, 2, PixelPalette.gold);
       }
     });
+  },
+  timelineActive(scene) {
+    return fitAsset(scene, 'scene-timeline-active', 38, 38);
   },
   sword(scene) {
     return imageFrom(scene, 'timeline-sword-v3', 20, 28, (ctx) => {
@@ -474,14 +742,14 @@ export const PixelUI = Object.freeze({
       const start = points[index - 1];
       const end = points[index];
       const vertical = start.x === end.x;
-      const length = (vertical ? Math.abs(end.y - start.y) : Math.abs(end.x - start.x)) + 2;
+      const length = (vertical ? Math.abs(end.y - start.y) : Math.abs(end.x - start.x)) + 1;
       const width = vertical ? 6 : length;
       const height = vertical ? length : 6;
-      const key = textureKey('ui-connector-segment-v3', [vertical, length, color]);
+      const key = textureKey('ui-connector-segment-v6', [vertical, length, color]);
       const segment = imageFrom(scene, key, width, height, (ctx) => {
         rect(ctx, 0, 0, width, height, 0x1b2d33);
-        if (vertical) rect(ctx, 2, 0, 2, height, color, 0.92);
-        else rect(ctx, 0, 2, width, 2, color, 0.92);
+        if (vertical) { rect(ctx, 1, 0, 4, height, color, 0.9); rect(ctx, 2, 0, 1, height, 0xb4dfcc, 0.35); }
+        else { rect(ctx, 0, 1, width, 4, color, 0.9); rect(ctx, 0, 2, width, 1, 0xb4dfcc, 0.35); }
       }).setOrigin(0, 0).setPosition(
         vertical ? start.x - 2 : Math.min(start.x, end.x),
         vertical ? Math.min(start.y, end.y) : start.y - 2,
@@ -510,6 +778,11 @@ export const PixelEffects = Object.freeze({
     });
   },
   attack(scene, actor = 'slime', direction = 1) {
+    return fitAsset(scene, actor === 'slime' ? 'effect-slime-impact' : 'effect-weapon-slash', 108, 72)
+      // The slime wave faces left in-source; the weapon slash faces right.
+      .setFlipX(actor === 'slime' ? direction > 0 : direction < 0);
+
+    /* Legacy runtime-painted impact retained temporarily during asset migration. */
     const key = `battle-attack-v3-${actor}`;
     return imageFrom(scene, key, 64, 40, (ctx) => {
       if (actor === 'slime') {
@@ -527,6 +800,9 @@ export const PixelEffects = Object.freeze({
       rect(ctx, 0, 0, width, height, side === 'left' ? 0x111c28 : 0x17212d);
       for (let y = 80; y < height; y += 96) { const offset = side === 'left' ? y / 8 : -y / 8; rect(ctx, Math.max(0, offset), y, width - Math.abs(offset), 20, 0x6c3940, 0.72); }
     });
+  },
+  encounterCrest(scene) {
+    return fitAsset(scene, 'scene-encounter-crest', 184, 184);
   },
 });
 

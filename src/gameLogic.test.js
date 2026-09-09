@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  calculateGrowth, canConsume, FOOD, getBattleBoneBonus, getBoneSearchCooldown, getBoneSpawnInterval, getBoneValue, getEvolutionMassCap,
+  calculateGrowth, canConsume, FOOD, UPGRADE_NODES, getBattleBoneBonus, getBoneSearchCooldown, getBoneSpawnInterval, getBoneValue, getEvolutionMassCap,
   getBonusProductionChance, getLargeBoneChance,
-  chooseBoneSpawnPoint, getBattlePlan, getBattleRacers, getSlimeStage, getVisibleUpgradeNodes, getUpgradeNodeState,
+  chooseBoneSpawnPoint, getBattlePlan, getBattleRacers, getFoodSpawnInterval, getFoodValue, getSlimeStage, getVisibleUpgradeNodes, getUpgradeNodeState,
   getWaveConfig, soulReward,
 } from './gameLogic.js';
 
@@ -126,4 +126,35 @@ test('已购买的节点即使暂时买不起下一级，也保持已掌握状�
   assert.deepEqual(getUpgradeNodeState(nutritionOne, { nutrition: 1, soul: 0 }), {
     purchased: true, known: true, unlocked: true, affordable: false,
   });
+});
+
+test('合成大骨堆只由核心蜕变揭示，第二骨堆只是额外解锁条件', () => {
+  const fusedPile = UPGRADE_NODES.find((node) => node.id === 'fused-pile-1');
+  assert.equal(getUpgradeNodeState(fusedPile, { evolution: 0, extraPile: 1, soul: 999 }).known, false);
+  assert.deepEqual(getUpgradeNodeState(fusedPile, { evolution: 1, extraPile: 0, soul: 999 }), {
+    purchased: false, known: true, unlocked: false, affordable: true,
+  });
+  assert.equal(getUpgradeNodeState(fusedPile, { evolution: 1, extraPile: 1, soul: 999 }).unlocked, true);
+});
+
+test('新食物分支由进化与新食物前置节点逐层揭示', () => {
+  assert.ok(!getVisibleUpgradeNodes({ evolution: 0 }).some((node) => node.branch === 'newFood'));
+  assert.ok(!getVisibleUpgradeNodes({ evolution: 0 }).some((node) => node.branch === 'saltMine'));
+  assert.ok(!getVisibleUpgradeNodes({ evolution: 0 }).some((node) => node.branch === 'pond'));
+  assert.equal(getUpgradeNodeState(UPGRADE_NODES.find((node) => node.id === 'new-food-1'), { evolution: 0 }).known, false);
+  assert.ok(getVisibleUpgradeNodes({ evolution: 1 }).some((node) => node.id === 'new-food-1'));
+  assert.equal(getUpgradeNodeState(UPGRADE_NODES.find((node) => node.id === 'salt-mine-1'), { newFood: 0, soul: 999 }).known, false);
+  assert.deepEqual(getUpgradeNodeState(UPGRADE_NODES.find((node) => node.id === 'salt-mine-1'), { newFood: 0, soul: 999 }), {
+    purchased: false, known: false, unlocked: false, affordable: true,
+  });
+});
+
+test('新食物必须进化到第二阶段才能食用，盐矿整体快于池塘', () => {
+  assert.equal(canConsume(100, 12, { evolution: 1 }, 'salt'), false);
+  assert.equal(canConsume(100, 12, { evolution: 2 }, 'salt'), true);
+  assert.equal(canConsume(100, 30, { evolution: 2 }, 'fish'), true);
+  assert.equal(getFoodValue('salt'), 12);
+  assert.equal(getFoodValue('fish'), 30);
+  assert.ok(getFoodValue('fish', { pond: 2 }) > getFoodValue('fish'));
+  assert.ok(getFoodSpawnInterval('salt', { saltMine: 1 }) < getFoodSpawnInterval('fish', { pond: 1 }));
 });
