@@ -172,28 +172,64 @@ export function getBattleRacers(wave) {
   return wave === 1 ? ['rookie'] : wave === 2 ? ['hunter'] : ['guard', 'archer', 'oracle'];
 }
 
-// Combat is intentionally deterministic: the exploration phase decides whether
-// the slime has enough Mass, while the battle phase turns that result into a
-// readable sequence of alternating actions.
-export function getBattlePlan(mass, enemyPower, wave = 1) {
-  const slimeWins = mass >= enemyPower;
+export function getBattlePlan(mass, enemyPower, wave = 1, options = {}) {
+  const random = options.random || Math.random;
+  const evolution = Math.max(0, options.evolution || 0);
+  const powerRatio = Math.max(1, mass) / Math.max(1, enemyPower);
+  const powerEdge = Math.log2(powerRatio);
+  const winChance = Math.max(0.06, Math.min(0.94, 0.5 + powerEdge * 0.28 + evolution * 0.035));
+  const favoredWinner = random() < winChance ? 'slime' : 'enemy';
   const enemyRoster = getBattleRacers(wave);
-  const enemyRacers = wave <= 2 ? [enemyRoster[0], enemyRoster[0], enemyRoster[0]] : enemyRoster;
+  const turns = [];
+  let slimeHp = 100;
+  let enemyHp = 100;
+
+  while (slimeHp > 0 && enemyHp > 0 && turns.length < 24) {
+    const previousActor = turns.at(-1)?.actor;
+    let slimeInitiative = Math.max(0.26, Math.min(0.74, 0.5 + powerEdge * 0.11 + evolution * 0.035));
+    if (previousActor === 'slime') slimeInitiative -= 0.18;
+    if (previousActor === 'enemy') slimeInitiative += 0.18;
+    if (turns.length >= 16) slimeInitiative += favoredWinner === 'slime' ? 0.28 : -0.28;
+    let actor = turns.length >= 21 ? favoredWinner : random() < slimeInitiative ? 'slime' : 'enemy';
+    const favoredHp = favoredWinner === 'slime' ? slimeHp : enemyHp;
+    if (actor !== favoredWinner && favoredHp <= 1) actor = favoredWinner;
+    const defenderHp = actor === 'slime' ? enemyHp : slimeHp;
+    const damageBase = actor === 'slime'
+      ? 22 + powerEdge * 5 + evolution * 2
+      : 22 - powerEdge * 4 + Math.min(4, wave - 1);
+    let damage = Math.max(8, Math.min(42, Math.round(damageBase * (0.78 + random() * 0.44))));
+
+    if (actor !== favoredWinner && damage >= defenderHp) damage = Math.max(1, defenderHp - 1);
+    if (actor === favoredWinner && turns.length >= 18) damage = defenderHp;
+    damage = Math.min(damage, defenderHp);
+
+    const tempoBase = actor === 'slime'
+      ? 1.06 - powerEdge * 0.07 - evolution * 0.075
+      : 1.02 - Math.min(3, wave - 1) * 0.035;
+    const tempo = Math.max(0.7, Math.min(1.25, Math.round((tempoBase + (random() - 0.5) * 0.16) * 100) / 100));
+    const racer = actor === 'slime' ? 'slime' : enemyRoster[Math.floor(random() * enemyRoster.length)];
+    turns.push({ actor, racer, damage, tempo });
+
+    if (actor === 'slime') enemyHp -= damage;
+    else slimeHp -= damage;
+  }
+
+  if (slimeHp > 0 && enemyHp > 0) {
+    const damage = favoredWinner === 'slime' ? enemyHp : slimeHp;
+    turns.push({
+      actor: favoredWinner,
+      racer: favoredWinner === 'slime' ? 'slime' : enemyRoster[Math.floor(random() * enemyRoster.length)],
+      damage,
+      tempo: favoredWinner === 'slime' ? Math.max(0.7, 0.9 - evolution * 0.05) : 0.9,
+    });
+    if (favoredWinner === 'slime') enemyHp = 0;
+    else slimeHp = 0;
+  }
+
   return {
-    slimeWins,
-    turns: slimeWins
-      ? [
-        { actor: 'slime', racer: 'slime', damage: 32 },
-        { actor: 'enemy', racer: enemyRacers[0], damage: 22 },
-        { actor: 'slime', racer: 'slime', damage: 31 },
-        { actor: 'slime', racer: 'slime', damage: 37 },
-      ]
-      : [
-        { actor: 'slime', racer: 'slime', damage: 20 },
-        { actor: 'enemy', racer: enemyRacers[0], damage: 25 },
-        { actor: 'enemy', racer: enemyRacers[1], damage: 31 },
-        { actor: 'enemy', racer: enemyRacers[2], damage: 44 },
-      ],
+    slimeWins: enemyHp <= 0,
+    winChance,
+    turns,
   };
 }
 
@@ -207,6 +243,9 @@ export function canConsume(mass, value, meta = emptyMeta(), foodType = 'bone') {
   return value <= limit;
 }
 
-export function soulReward(mass, wave) {
-  return Math.max(3, Math.floor(mass / 45) + wave * 3);
+export function soulReward(mass, wave, meta = emptyMeta()) {
+  const firstNodeCost = Math.min(...UPGRADE_NODES.filter((node) => node.level === 1 && !node.requires).map((node) => node.cost));
+  const runProgress = Math.floor(Math.max(0, mass) / 25) + Math.max(0, wave - 1) * 12;
+  const evolutionProgress = Math.max(0, meta.evolution || 0) * 10;
+  return firstNodeCost + runProgress + evolutionProgress;
 }

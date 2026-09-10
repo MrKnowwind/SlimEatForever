@@ -176,12 +176,16 @@ export function createDungeon(scene, width, height) {
 }
 
 export function makeBattleBackdrop(scene, width, height) {
-  // Battle structure remains code-driven, while the formal environment comes
-  // from the same authored pixel background as the dungeon scene.
-  return scene.add.image(width / 2, height / 2, 'scene-dungeon-background')
-    .setDisplaySize(width, height)
-    .setTint(0x83939b)
-    .setAlpha(0.86);
+  const root = scene.add.container(0, 0);
+  const cover = scene.add.rectangle(width / 2, height / 2, width, height, 0x071016, 1);
+  const layer = (x, y, alpha) => scene.add.image(width / 2 + x, height / 2 + y, 'scene-dungeon-background')
+    .setDisplaySize(width + 8, height + 8)
+    .setTint(0x687b83)
+    .setAlpha(alpha);
+  const backgroundLayers = [layer(0, 0, 0.62), layer(-4, 0, 0.11), layer(4, 0, 0.11), layer(0, -4, 0.08), layer(0, 4, 0.08)];
+  const shade = scene.add.rectangle(width / 2, height / 2, width, height, 0x071016, 0.28);
+  root.add([cover, ...backgroundLayers, shade]);
+  return root;
 }
 
 export const DungeonProps = Object.freeze({
@@ -460,7 +464,13 @@ export const PixelUI = Object.freeze({
       .setPosition(x, y);
   },
   treeDetailPanel(scene, x, y, width, height) {
-    return fitAsset(scene, 'tree-detail-panel-v3', width, height).setPosition(x, y);
+    const source = scene.textures.get('tree-detail-panel-v3').getSourceImage();
+    const scale = width / source.width;
+    return scene.add.nineslice(
+      x, y, 'tree-detail-panel-v3', undefined,
+      source.width, height / scale,
+      90, 90, 90, 90,
+    ).setScale(scale);
   },
   resultPanel(scene, x, y, width, height) {
     // The generated frame has a few transparent pixels heavier on the left;
@@ -674,8 +684,6 @@ export const PixelUI = Object.freeze({
     });
   },
   resourceBadge(scene, width = 128) {
-    return PixelUI.treePanel(scene, 0, 0, width, 44);
-    /* Legacy runtime-painted badge is unreachable after asset migration. */
     return imageFrom(scene, textureKey('tree-resource-v5', [width]), width, 44, (ctx) => {
       rect(ctx, 8, 0, width - 16, 4, 0x355965); rect(ctx, 4, 4, width - 8, 36, 0x355965); rect(ctx, 8, 40, width - 16, 4, 0x18323d);
       rect(ctx, 10, 6, width - 20, 30, 0x0b1d2a); rect(ctx, 14, 8, width - 28, 2, 0x759698, 0.24);
@@ -684,8 +692,14 @@ export const PixelUI = Object.freeze({
       rect(ctx, 20, 12, 12, 16, 0xf0bd50); rect(ctx, 20, 12, 8, 8, 0xffdf7e);
     });
   },
+  soulCrystal(scene, size = 48) {
+    return fitAsset(scene, 'tree-soul-crystal-v1', size, size);
+  },
   treeButton(scene, width = 224, height = 40, variant = 'dialog') {
-    return fitAsset(scene, variant === 'complete' ? 'tree-complete-button-v2' : 'tree-dialog-button', width, height);
+    if (variant === 'complete') {
+      return fitAsset(scene, 'tree-complete-button-v5', width, height);
+    }
+    return fitAsset(scene, 'tree-dialog-button', width, height);
     /* Legacy runtime-painted button is unreachable after asset migration. */
     return imageFrom(scene, textureKey('tree-button-v3', [width, height]), width, height, (ctx) => {
       rect(ctx, 12, 0, width - 24, 4, 0x8bd4a5); rect(ctx, 4, 8, width - 8, height - 16, 0x8bd4a5); rect(ctx, 12, height - 4, width - 24, 4, 0x396d5f);

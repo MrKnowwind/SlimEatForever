@@ -61,23 +61,34 @@ test('波次战力递增并缩短倒计时', () => {
   assert.ok(getWaveConfig(3).duration < getWaveConfig(2).duration);
 });
 
-test('战斗行动序列会保留双方行动，并随波次扩展敌方单位', () => {
-  const winningPlan = getBattlePlan(100, 70, 1);
-  const losingPlan = getBattlePlan(30, 70, 1);
-  const squadPlan = getBattlePlan(30, 70, 3);
-  assert.equal(winningPlan.slimeWins, true);
-  assert.equal(winningPlan.turns.at(-1).actor, 'slime');
-  assert.equal(losingPlan.slimeWins, false);
-  assert.equal(losingPlan.turns.at(-1).actor, 'enemy');
-  assert.ok(winningPlan.turns.some((turn) => turn.actor === 'enemy'));
-  assert.deepEqual(
-    losingPlan.turns.filter((turn) => turn.actor === 'enemy').map((turn) => turn.racer),
-    ['rookie', 'rookie', 'rookie'],
-  );
-  assert.deepEqual(
-    squadPlan.turns.filter((turn) => turn.actor === 'enemy').map((turn) => turn.racer),
-    ['guard', 'archer', 'oracle'],
-  );
+test('战斗由敌我数值与随机过程共同决定，而不是固定胜负脚本', () => {
+  const seededRandom = (seed) => () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 4294967296;
+  };
+  const strongWins = Array.from({ length: 120 }, (_, seed) => (
+    getBattlePlan(240, 100, 1, { random: seededRandom((seed + 1) * 7919) }).slimeWins
+  )).filter(Boolean).length;
+  const weakWins = Array.from({ length: 120 }, (_, seed) => (
+    getBattlePlan(60, 100, 1, { random: seededRandom((seed + 1) * 7919) }).slimeWins
+  )).filter(Boolean).length;
+  const first = getBattlePlan(100, 100, 3, { random: seededRandom(7) });
+  const second = getBattlePlan(100, 100, 3, { random: seededRandom(8) });
+
+  assert.ok(strongWins > weakWins + 50);
+  assert.notDeepEqual(first.turns, second.turns);
+  assert.equal(first.turns.at(-1).actor, first.slimeWins ? 'slime' : 'enemy');
+  assert.ok(first.turns.every((turn) => turn.damage > 0 && turn.tempo >= 0.7 && turn.tempo <= 1.25));
+  assert.ok(first.turns.filter((turn) => turn.actor === 'enemy').every((turn) => ['guard', 'archer', 'oracle'].includes(turn.racer)));
+});
+
+test('更高进化阶段会让史莱姆行动节奏更快', () => {
+  const fixedRandom = () => 0.42;
+  const micro = getBattlePlan(120, 120, 1, { random: fixedRandom, evolution: 0 });
+  const evolved = getBattlePlan(120, 120, 1, { random: fixedRandom, evolution: 2 });
+  const slimeTempo = (plan) => plan.turns.filter((turn) => turn.actor === 'slime').reduce((sum, turn) => sum + turn.tempo, 0)
+    / plan.turns.filter((turn) => turn.actor === 'slime').length;
+  assert.ok(slimeTempo(evolved) < slimeTempo(micro));
 });
 
 test('第一波只有木剑见习者，后续波次才出现完整小队', () => {
@@ -100,10 +111,10 @@ test('初始形态是无表情微型黏液，首次蜕变后进入现有凝胶�
   assert.equal(getSlimeStage({ evolution: 1 }), '凝胶体');
 });
 
-test('失败时获得魂晶，但首次升级需要积累多局资源', () => {
-  assert.ok(soulReward(300, 3) > soulReward(100, 1));
-  const firstReward = soulReward(0, 1);
-  assert.ok(getVisibleUpgradeNodes().every((node) => node.cost > firstReward * 5));
+test('首次失败至少能点亮一个节点，深入游玩会获得更多魂晶', () => {
+  const cheapestRoot = Math.min(...getVisibleUpgradeNodes().map((node) => node.cost));
+  assert.ok(soulReward(0, 1) >= cheapestRoot);
+  assert.ok(soulReward(300, 3, { evolution: 1 }) > soulReward(100, 1));
 });
 
 test('蜕变需要营养 II 与产出 II，满足任一前置后会显示条件', () => {

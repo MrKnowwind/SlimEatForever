@@ -15,6 +15,14 @@ import { PIXEL_UI_ASSETS, PixelTheme, resolveSkillVisualState } from './pixelUiA
 function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
 function distance(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
 const TREE_FONT = 'Microsoft YaHei, PingFang SC, sans-serif';
+const SLIME_DYE_HUE_SHIFT = Object.freeze({ blue: 0, red: 155, green: -65, yellow: -145, purple: 80 });
+const TREE_UI_LAYOUT = Object.freeze({
+  headerY: 42,
+  titleX: 250,
+  soulX: 930,
+  complete: Object.freeze({ x: 580, y: 668, width: 190, height: 100 }),
+  detail: Object.freeze({ x: 580, y: 360, width: 520, height: 360, actionY: 126 }),
+});
 
 class SlimeDungeonScene extends Phaser.Scene {
   constructor() { super('slime-dungeon'); }
@@ -61,6 +69,10 @@ class SlimeDungeonScene extends Phaser.Scene {
 
   loadMeta() {
     try {
+      if (new URLSearchParams(window.location.search).has('reset')) {
+        localStorage.removeItem('slime-dungeon-meta');
+        window.history.replaceState({}, '', window.location.pathname);
+      }
       return { ...emptyMeta(), ...JSON.parse(localStorage.getItem('slime-dungeon-meta') || '{}') };
     } catch { return emptyMeta(); }
   }
@@ -86,8 +98,8 @@ class SlimeDungeonScene extends Phaser.Scene {
     const hud = this.add.container(0, 0).setDepth(20);
     const plate = pixelPanel(this, 580, 50, 1104, 80, PixelPalette.edge);
     hud.add(plate);
-    hud.add(this.add.text(48, 28, '史 莱 姆 地 牢', { fontFamily: 'Microsoft YaHei, sans-serif', fontSize: '22px', fontStyle: 'bold', color: '#f5efda', stroke: '#071015', strokeThickness: 3 }));
-    hud.add(this.add.text(276, 26, '进 化', { fontFamily: 'Microsoft YaHei, sans-serif', fontSize: '12px', fontStyle: 'bold', color: '#8fc9ae' }));
+    hud.add(this.add.text(48, 36, '史 莱 姆 地 牢', { fontFamily: 'Microsoft YaHei, sans-serif', fontSize: '22px', fontStyle: 'bold', color: '#f5efda', stroke: '#071015', strokeThickness: 3 }));
+    hud.add(this.add.text(276, 34, '进 化', { fontFamily: 'Microsoft YaHei, sans-serif', fontSize: '12px', fontStyle: 'bold', color: '#8fc9ae' }));
     const evolutionBar = PixelUI.bar(this, 431, 55, 310, 16, PixelPalette.cyan);
     this.evolutionBarBg = evolutionBar.background;
     this.evolutionFill = evolutionBar.fill;
@@ -165,8 +177,15 @@ class SlimeDungeonScene extends Phaser.Scene {
   makeAuthoredSlimeArt(textureKey, form, scale, baseSize) {
     const root = this.add.container(0, 0).setScale(scale);
     const sprite = this.add.sprite(0, 0, textureKey, 0).setOrigin(0.5, 1).setDisplaySize(baseSize, baseSize);
-    const tints = { blue: 0xffffff, red: 0xff8794, green: 0x85efb1, yellow: 0xffdc73, purple: 0xc38cff };
-    sprite.setTint(tints[this.meta?.dyeColor] || 0xffffff);
+    const hueShift = SLIME_DYE_HUE_SHIFT[this.meta?.dyeColor || 'blue'] || 0;
+    if (hueShift !== 0) {
+      // Phaser 4 keeps object filters disabled until explicitly enabled.
+      // Guard the pipeline so a saved non-blue dye can never abort scene boot.
+      sprite.enableFilters?.();
+      const colorFilter = sprite.filters?.internal?.addColorMatrix?.();
+      if (colorFilter) colorFilter.colorMatrix.hue(hueShift);
+      else sprite.setTint(0xffffff);
+    }
     sprite.play(`slime-${form}-idle`);
     root.add(sprite);
     return { root, sprite, form, eyes: null, glints: null, mouth: null };
@@ -714,13 +733,13 @@ class SlimeDungeonScene extends Phaser.Scene {
     battle.add([slime.root, party.root]);
 
     this.battleSpeed = 1;
-    const playerCard = this.createBattleCard(battle, 197, 142, getSlimeStage(this.meta), '进化能量', 0x65d682, 0x153b36);
+    const playerCard = this.createBattleCard(battle, 197, 142, getSlimeStage(this.meta), '战力 ' + formatNumber(this.mass), 0x65d682, 0x153b36);
     const enemyName = config.wave === 1 ? '木剑见习者' : config.wave === 2 ? '老练的猎人' : '冒险者小队';
     const enemyCard = this.createBattleCard(battle, 963, 142, enemyName, '战力 ' + formatNumber(config.power), 0xe0827c, 0x4b2935);
     const timeline = this.createBattleTimeline(battle, config.wave);
     this.battleState = {
       config,
-      plan: getBattlePlan(this.mass, config.power, config.wave),
+      plan: getBattlePlan(this.mass, config.power, config.wave, { evolution: this.meta.evolution || 0 }),
       slimeHp: 100,
       enemyHp: 100,
       actors: { slime, enemy: party },
@@ -759,18 +778,25 @@ class SlimeDungeonScene extends Phaser.Scene {
     panel.add(this.add.text(-472, -34, '行动轨道', { fontFamily: 'Microsoft YaHei, sans-serif', fontSize: '14px', fontStyle: 'bold', color: '#f4e9cf' }));
     const actionText = this.add.text(-332, -34, '准备', { fontFamily: 'Microsoft YaHei, sans-serif', fontSize: '11px', color: '#9db5ad' });
     panel.add(actionText);
-    const speedButton = this.add.container(432, -32);
-    const speedBg = pixelPanel(this, 0, 0, 80, 24, 0x79bd8c, 0x213630).setInteractive({ useHandCursor: true });
-    const speedText = this.add.text(0, 0, '速度 1x', { fontFamily: 'sans-serif', fontSize: '12px', fontStyle: 'bold', color: '#d9f0d5' }).setOrigin(0.5);
+    // The speed control belongs to the battle HUD, not the timeline: keeping it
+    // in the root battle container gives it a stable upper-right safe zone.
+    const speedButton = this.add.container(1040, 62);
+    const speedBg = pixelPanel(this, 0, 0, 112, 36, 0x79bd8c, 0x213630).setInteractive({ useHandCursor: true });
+    const speedText = this.add.text(0, 0, '速度 1x', { fontFamily: 'sans-serif', fontSize: '14px', fontStyle: 'bold', color: '#d9f0d5' }).setOrigin(0.5);
     speedButton.add([speedBg, speedText]);
-    speedBg.on('pointerover', () => speedBg.setTint(0xc8ffe2));
-    speedBg.on('pointerout', () => speedBg.clearTint());
+    const updateSpeedVisual = (hover = false) => {
+      const fast = this.battleSpeed === 2;
+      speedBg.setTint(hover ? (fast ? 0xffa1a5 : 0xc8ffe2) : (fast ? 0xf06b72 : 0xffffff));
+      speedText.setColor(fast ? '#ffe1df' : '#d9f0d5');
+    };
+    speedBg.on('pointerover', () => updateSpeedVisual(true));
+    speedBg.on('pointerout', () => updateSpeedVisual(false));
     speedBg.on('pointerdown', () => {
       this.battleSpeed = this.battleSpeed === 1 ? 2 : 1;
       speedText.setText(`速度 ${this.battleSpeed}x`);
-      speedBg.setTint(this.battleSpeed === 2 ? 0xe7bf69 : 0xffffff);
+      updateSpeedVisual();
     });
-    panel.add(speedButton);
+    battle.add(speedButton);
 
     const startX = -404;
     const width = 808;
@@ -875,13 +901,14 @@ class SlimeDungeonScene extends Phaser.Scene {
       return;
     }
     const turn = state.plan.turns[index];
+    state.actionTempo = turn.tempo;
     this.runBattleRace(turn.racer, () => this.performBattleStrike(turn, () => {
       this.time.delayedCall(this.battleDuration(480), () => this.playBattleTurn(index + 1));
     }));
   }
 
   battleDuration(base) {
-    return base / (this.battleSpeed || 1);
+    return base * (this.battleState?.actionTempo || 1) / (this.battleSpeed || 1);
   }
 
   runBattleRace(racerKey, complete) {
@@ -1163,13 +1190,13 @@ class SlimeDungeonScene extends Phaser.Scene {
   }
 
   showResult(config) {
-    const earned = soulReward(this.mass, this.wave);
+    const earned = soulReward(this.mass, this.wave, this.meta);
     this.meta.soul += earned; this.saveMeta();
     const overlay = this.add.container(0, 0).setDepth(50);
     overlay.add(PixelUI.veil(this, WIDTH, HEIGHT, 0.84).setPosition(580, 360));
-    overlay.add(PixelUI.resultPanel(this, 580, 361, 760, 466));
-    overlay.add(this.add.text(580, 268, '本 局 结 算', { fontFamily: TREE_FONT, fontSize: '30px', fontStyle: 'bold', color: '#f5efda' }).setOrigin(0.5));
-    overlay.add(this.add.text(580, 301, `止步于第 ${this.wave} 波 · ${config.title}`, { fontFamily: TREE_FONT, fontSize: '13px', color: '#99aab0' }).setOrigin(0.5));
+    overlay.add(PixelUI.resultPanel(this, 580, 361, 800, 490));
+    overlay.add(this.add.text(580, 282, '本 局 结 算', { fontFamily: TREE_FONT, fontSize: '30px', fontStyle: 'bold', color: '#f5efda' }).setOrigin(0.5));
+    overlay.add(this.add.text(580, 315, `止步于第 ${this.wave} 波 · ${config.title}`, { fontFamily: TREE_FONT, fontSize: '13px', color: '#99aab0' }).setOrigin(0.5));
     const stats = [
       ['进化阶段', getSlimeStage(this.meta), 0x9be7a8],
       ['吞噬骨片', formatNumber(this.itemsFed), 0xe7d7af],
@@ -1178,12 +1205,12 @@ class SlimeDungeonScene extends Phaser.Scene {
     ];
     stats.forEach(([label, value, color], index) => {
       const x = 390 + index * 128;
-      overlay.add(this.add.text(x, 342, label, { fontFamily: TREE_FONT, fontSize: '11px', color: '#7f9299' }).setOrigin(0.5));
-      overlay.add(this.add.text(x, 373, value, { fontFamily: TREE_FONT, fontSize: '20px', fontStyle: 'bold', color: `#${color.toString(16).padStart(6, '0')}` }).setOrigin(0.5));
+      overlay.add(this.add.text(x, 358, label, { fontFamily: TREE_FONT, fontSize: '11px', color: '#7f9299' }).setOrigin(0.5));
+      overlay.add(this.add.text(x, 389, value, { fontFamily: TREE_FONT, fontSize: '20px', fontStyle: 'bold', color: `#${color.toString(16).padStart(6, '0')}` }).setOrigin(0.5));
     });
-    overlay.add(this.add.text(580, 424, `持有魂晶  ${this.meta.soul} ◆`, { fontFamily: TREE_FONT, fontSize: '15px', color: '#d5b969' }).setOrigin(0.5));
-    const restart = this.makeResultButton(455, 525, '直接重新开始', 'confirm', () => this.scene.restart());
-    const upgrade = this.makeResultButton(705, 525, '进入升级树', 'secondary', () => { overlay.destroy(true); this.showUpgradeTree(); });
+    overlay.add(this.add.text(580, 444, `持有魂晶  ${this.meta.soul} ◆`, { fontFamily: TREE_FONT, fontSize: '16px', fontStyle: 'bold', color: '#f0c866', stroke: '#15252a', strokeThickness: 3 }).setOrigin(0.5));
+    const restart = this.makeResultButton(455, 625, '直接重新开始', 'confirm', () => this.scene.restart());
+    const upgrade = this.makeResultButton(705, 625, '进入升级树', 'secondary', () => { overlay.destroy(true); this.showUpgradeTree(); });
     overlay.add([restart, upgrade]);
   }
 
@@ -1290,9 +1317,24 @@ class SlimeDungeonScene extends Phaser.Scene {
     };
     this.addUpgradeTreeLinks(treeContent, positions);
     Object.entries(positions).forEach(([branch, position]) => this.addUpgradeTreeNode(treeContent, branch, position.x, position.y));
-    overlay.add(this.add.text(160, 72, '进化树', { fontFamily: TREE_FONT, fontSize: '28px', fontStyle: 'bold', color: '#f1ead8', shadow: { offsetX: 2, offsetY: 2, color: '#07111c', blur: 0, fill: true } }).setOrigin(0, 0.5));
-    overlay.add(this.add.text(1000, 72, `魂晶  ${this.meta.soul} ◆`, { fontFamily: TREE_FONT, fontSize: '19px', fontStyle: 'bold', color: '#f4ca67' }).setOrigin(1, 0.5));
-    overlay.add(this.makeTreeButton(580, 614, '完成', () => this.scene.restart(), 210, 72, 'complete'));
+    const titleBadge = this.add.container(TREE_UI_LAYOUT.titleX, TREE_UI_LAYOUT.headerY);
+    titleBadge.add(this.add.text(0, 0, '进 化 树', {
+      fontFamily: TREE_FONT, fontSize: '22px', fontStyle: 'bold', color: '#f4ead3',
+      stroke: '#14212a', strokeThickness: 5,
+    }).setOrigin(0.5));
+    const soulBadge = this.add.container(TREE_UI_LAYOUT.soulX, TREE_UI_LAYOUT.headerY);
+    soulBadge.add(PixelUI.soulCrystal(this, 44).setPosition(-54, 0));
+    soulBadge.add(this.add.text(-25, -10, '魂 晶', {
+      fontFamily: TREE_FONT, fontSize: '11px', fontStyle: 'bold', color: '#9bc5ba',
+      stroke: '#14212a', strokeThickness: 3,
+    }).setOrigin(0, 0.5));
+    soulBadge.add(this.add.text(-25, 12, formatNumber(this.meta.soul), {
+      fontFamily: TREE_FONT, fontSize: '18px', fontStyle: 'bold', color: '#f4c96b',
+      stroke: '#13232b', strokeThickness: 4,
+    }).setOrigin(0, 0.5));
+    overlay.add([titleBadge, soulBadge]);
+    const complete = TREE_UI_LAYOUT.complete;
+    overlay.add(this.makeTreeButton(complete.x, complete.y, '完 成', () => this.scene.restart(), complete.width, complete.height, 'complete'));
 
     treeCamera = this.cameras.add(viewport.x, viewport.y, viewport.width, viewport.height)
       .setScroll(viewport.x, viewport.y);
@@ -1376,34 +1418,36 @@ class SlimeDungeonScene extends Phaser.Scene {
       if (this.upgradeTreeCamera === treeCamera && treeCamera) treeCamera.visible = true;
     });
     detail.add(PixelUI.veil(this, WIDTH, HEIGHT, 0.52).setPosition(580, 360));
-    detail.add(PixelUI.treeDetailPanel(this, 580, 360, 500, 257));
+    const layout = TREE_UI_LAYOUT.detail;
+    const card = this.add.container(layout.x, layout.y);
+    card.add(PixelUI.treeDetailPanel(this, 0, 0, layout.width, layout.height));
     const detailState = resolveSkillVisualState({ current, ...state });
-    detail.add(PixelUI.skillNode(this, branch, detailState).setPosition(398, 282));
+    card.add(PixelUI.skillNode(this, branch, detailState).setPosition(-158, -86));
     if (!hidden && state.unlocked && !full) {
       const nextRoman = ['I', 'II', 'III', 'IV'][current] || 'IV';
-      detail.add(PixelUI.tierBadge(this, nextRoman, state.affordable ? 'available' : 'locked').setPosition(361, 246));
-      detail.add(this.add.text(361, 246, nextRoman, { fontFamily: TREE_FONT, fontSize: '12px', fontStyle: 'bold', color: '#f5efda', stroke: '#14212a', strokeThickness: 2 }).setOrigin(0.5));
+      card.add(PixelUI.tierBadge(this, nextRoman, state.affordable ? 'available' : 'locked').setPosition(-195, -122));
+      card.add(this.add.text(-195, -122, nextRoman, { fontFamily: TREE_FONT, fontSize: '12px', fontStyle: 'bold', color: '#f5efda', stroke: '#14212a', strokeThickness: 2 }).setOrigin(0.5));
     }
-    detail.add(this.add.text(456, 262, hidden ? '未知节点' : full ? `${node.name} · 已完成` : node.name, { fontFamily: TREE_FONT, fontSize: '24px', fontStyle: 'bold', color: '#f4ead3' }));
+    card.add(this.add.text(-94, -112, hidden ? '未知节点' : full ? `${node.name} · 已完成` : node.name, { fontFamily: TREE_FONT, fontSize: '24px', fontStyle: 'bold', color: '#f4ead3' }));
     const description = hidden ? '继续点亮前置能力后，这个节点会显露。' : full ? `该能力已升至 ${current}/${max}。` : node.desc;
-    detail.add(this.add.text(456, 300, description, { fontFamily: TREE_FONT, fontSize: '13px', color: '#aabbbc', wordWrap: { width: 255 } }));
+    card.add(this.add.text(-94, -74, description, { fontFamily: TREE_FONT, fontSize: '13px', color: '#aabbbc', wordWrap: { width: 270 } }));
     const status = full ? '已掌握' : !state.unlocked ? `解锁条件：${this.getRequirementText(node)}` : state.affordable ? `消耗 ${node.cost} ◆` : `魂晶不足 · 还差 ${node.cost - this.meta.soul} ◆`;
-    detail.add(this.add.text(456, 350, `等级进度  ${current}/${max}`, { fontFamily: 'Microsoft YaHei, sans-serif', fontSize: '12px', color: '#8fa8a2' }));
-    detail.add(this.add.text(456, 378, status, { fontFamily: TREE_FONT, fontSize: '14px', fontStyle: 'bold', color: full ? '#a8e8ad' : state.unlocked && state.affordable ? '#f2c867' : '#8b9ca0', wordWrap: { width: 265 } }));
+    card.add(this.add.text(-94, -15, `等级进度  ${current}/${max}`, { fontFamily: 'Microsoft YaHei, sans-serif', fontSize: '12px', color: '#8fa8a2' }));
+    card.add(this.add.text(-94, 15, status, { fontFamily: TREE_FONT, fontSize: '14px', fontStyle: 'bold', color: full ? '#a8e8ad' : state.unlocked && state.affordable ? '#f2c867' : '#8b9ca0', wordWrap: { width: 270 } }));
     if (branch === 'dye' && current > 0) {
       const colors = [
         ['blue', '蓝色', 0x55c8ee], ['red', '红色', 0xed6f80], ['green', '绿色', 0x62d29b], ['yellow', '黄色', 0xefd064], ['purple', '紫色', 0xb079dc],
       ];
       const currentColor = colors.find(([color]) => color === (this.meta.dyeColor || 'blue')) || colors[0];
-      detail.add(this.add.text(456, 398, `当前：${currentColor[1]}`, { fontFamily: TREE_FONT, fontSize: '11px', color: '#d3e4d2' }));
+      card.add(this.add.text(-94, 43, `当前：${currentColor[1]}`, { fontFamily: TREE_FONT, fontSize: '11px', color: '#d3e4d2' }));
       colors.forEach(([color, label, tint], index) => {
         const chip = pixelPanel(this, 0, 0, 30, 22, color === (this.meta.dyeColor || 'blue') ? 0xf2c867 : 0x53686a, 0x16242b)
-          .setPosition(520 + index * 42, 414).setInteractive({ useHandCursor: true });
+          .setPosition(-30 + index * 42, 66).setInteractive({ useHandCursor: true });
         const swatch = this.add.rectangle(0, 0, 12, 12, tint).setOrigin(0.5);
         const holder = this.add.container(chip.x, chip.y);
         holder.add(swatch);
-        detail.add(chip);
-        detail.add(holder);
+        card.add(chip);
+        card.add(holder);
         chip.on('pointerdown', () => {
           this.meta.dyeColor = color;
           this.saveMeta();
@@ -1412,10 +1456,12 @@ class SlimeDungeonScene extends Phaser.Scene {
         });
       });
     }
-    detail.add(this.makeTreeButton(493, 468, '返回', () => detail.destroy(true), 140, 56));
-    if (!full && state.unlocked && state.affordable) {
-      detail.add(this.makeTreeButton(666, 468, '确认升级', () => this.buyUpgradeNode(node), 140, 56));
+    const canBuy = !full && state.unlocked && state.affordable;
+    card.add(this.makeTreeButton(canBuy ? -88 : 0, layout.actionY, '返回', () => detail.destroy(true), 140, 56));
+    if (canBuy) {
+      card.add(this.makeTreeButton(88, layout.actionY, '确认升级', () => this.buyUpgradeNode(node), 140, 56));
     }
+    detail.add(card);
   }
 
   buyUpgradeNode(node) {
@@ -1453,7 +1499,10 @@ class SlimeDungeonScene extends Phaser.Scene {
   makeTreeButton(x, y, label, action, width = 176, height = 72, variant = 'dialog') {
     const button = this.add.container(x, y);
     const bg = PixelUI.treeButton(this, width, height, variant).setInteractive({ useHandCursor: true });
-    const text = this.add.text(0, variant === 'complete' ? -5 : 0, label, { fontFamily: TREE_FONT, fontSize: width < 150 ? '14px' : '18px', fontStyle: 'bold', color: '#e2f2df' }).setOrigin(0.5);
+    const text = this.add.text(0, variant === 'complete' ? -4 : 0, label, {
+      fontFamily: TREE_FONT, fontSize: variant === 'complete' ? '18px' : width < 150 ? '14px' : '18px',
+      fontStyle: 'bold', color: '#e2f2df', stroke: '#102027', strokeThickness: 2,
+    }).setOrigin(0.5);
     bg.on('pointerover', () => bg.setTint(0xdffff1));
     bg.on('pointerout', () => bg.clearTint());
     bg.on('pointerdown', () => bg.setTint(0xa8c6b7));
