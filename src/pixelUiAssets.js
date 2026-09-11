@@ -106,8 +106,10 @@ export const PIXEL_UI_ASSETS = Object.freeze([
   { key: PRODUCTION_PROP_TEXTURE_BY_TYPE.fish, url: new URL('../assets/pixel/props/pond.png', import.meta.url).href },
 ]);
 
-export function resolveSkillVisualState({ current, known, unlocked, affordable }) {
-  if (current > 0) return SkillVisualState.OWNED;
+export function resolveSkillVisualState({ current, purchased, known, unlocked, affordable }) {
+  // `current` is the branch level; the visual state belongs to the target
+  // node. A purchased earlier tier must not hide an affordable next tier.
+  if (purchased || (current > 0 && !unlocked)) return SkillVisualState.OWNED;
   if (!known) return SkillVisualState.UNKNOWN;
   if (unlocked && affordable) return SkillVisualState.AVAILABLE;
   return SkillVisualState.LOCKED;

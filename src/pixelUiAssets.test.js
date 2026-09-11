@@ -8,7 +8,8 @@ import {
 test('进化树视觉状态统一映射到四套固定节点资产', () => {
   assert.deepEqual(Object.values(SkillVisualState), ['owned', 'available', 'locked', 'unknown']);
   assert.deepEqual(Object.keys(NODE_TEXTURE_BY_STATE), Object.values(SkillVisualState));
-  assert.equal(resolveSkillVisualState({ current: 1, known: true, unlocked: true, affordable: false }), 'owned');
+  assert.equal(resolveSkillVisualState({ current: 1, purchased: true, known: true, unlocked: true, affordable: false }), 'owned');
+  assert.equal(resolveSkillVisualState({ current: 1, purchased: false, known: true, unlocked: true, affordable: true }), 'available');
   assert.equal(resolveSkillVisualState({ current: 0, known: true, unlocked: true, affordable: true }), 'available');
   assert.equal(resolveSkillVisualState({ current: 0, known: true, unlocked: false, affordable: true }), 'locked');
   assert.equal(resolveSkillVisualState({ current: 0, known: false, unlocked: false, affordable: false }), 'unknown');
